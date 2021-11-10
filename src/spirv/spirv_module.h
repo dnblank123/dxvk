@@ -4,6 +4,7 @@
 
 #include "spirv_code_buffer.h"
 #include "spirv_compression.h"
+#include <optional>
 
 namespace dxvk {
   
