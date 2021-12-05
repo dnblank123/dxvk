@@ -36,9 +36,9 @@ namespace dxvk {
      * \returns \c true if the resource is in use
      */
     bool isInUse(DxvkAccess access) const {
-      bool result = m_useCount[u_v<DxvkAccess::Write>].load(std::memory_order_seq_cst) != 0;
+      bool result = m_useCount[u_v<DxvkAccess::Write>].load(std::memory_order_acquire) != 0;
       if (access == DxvkAccess::Read)
-        result |= m_useCount[u_v<DxvkAccess::Read>].load(std::memory_order_seq_cst) != 0;
+        result |= m_useCount[u_v<DxvkAccess::Read>].load(std::memory_order_acquire) != 0;
       return result;
     }
     
@@ -53,7 +53,7 @@ namespace dxvk {
      */
     void acquire(DxvkAccess access) {
       if (access != DxvkAccess::None)
-        m_useCount[to_int(access)].fetch_add(1, std::memory_order_seq_cst);
+        m_useCount[to_int(access)].fetch_add(1, std::memory_order_acquire);
     }
 
     template<DxvkAccess Access>
@@ -67,7 +67,7 @@ namespace dxvk {
      */
     void release(DxvkAccess access) {
       if (access != DxvkAccess::None)
-        m_useCount[to_int(access)].fetch_sub(1, std::memory_order_seq_cst);
+        m_useCount[to_int(access)].fetch_sub(1, std::memory_order_release);
     }
 
     template<DxvkAccess Access>
@@ -98,20 +98,20 @@ namespace dxvk {
   /* isInUse() specialized for DxvkAccess::Read */
   template<>
   inline bool DxvkResource::isInUse<DxvkAccess::Read>() const {
-    return m_useCount[u_v<DxvkAccess::Write>].load(std::memory_order_seq_cst) != 0
-        || m_useCount[u_v<DxvkAccess::Read>].load(std::memory_order_seq_cst) != 0;
+    return m_useCount[u_v<DxvkAccess::Write>].load(std::memory_order_acquire) != 0
+        || m_useCount[u_v<DxvkAccess::Read>].load(std::memory_order_acquire) != 0;
   }
 
   /* isInUse() specialized for DxvkAccess::Write and DxvkAccess::None */
   template<DxvkAccess>
   inline bool DxvkResource::isInUse() const {
-    return m_useCount[u_v<DxvkAccess::Write>].load(std::memory_order_seq_cst) != 0;
+    return m_useCount[u_v<DxvkAccess::Write>].load(std::memory_order_acquire) != 0;
   }
 
   /* acquire() specialized for DxvkAccess::Read and DxvkAccess::Write */
   template<DxvkAccess Access>
   inline void DxvkResource::acquire() {
-    m_useCount[u_v<Access>].fetch_add(1, std::memory_order_seq_cst);
+    m_useCount[u_v<Access>].fetch_add(1, std::memory_order_acquire);
   }
 
   /* acquire() specialized for DxvkAccess::None (no-op) */
@@ -120,7 +120,7 @@ namespace dxvk {
   /* release() specialized for DxvkAccess::Read and DxvkAccess::Write */
   template<DxvkAccess Access>
   inline void DxvkResource::release() {
-    m_useCount[u_v<Access>].fetch_sub(1, std::memory_order_seq_cst);
+    m_useCount[u_v<Access>].fetch_sub(1, std::memory_order_release);
   }
 
   /* release() specialized for DxvkAccess::None (no-op) */
