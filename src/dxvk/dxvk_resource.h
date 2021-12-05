@@ -35,13 +35,16 @@ namespace dxvk {
      * \param [in] access Access type to check for
      * \returns \c true if the resource is in use
      */
-    bool isInUse(DxvkAccess access = DxvkAccess::Read) const {
+    bool isInUse(DxvkAccess access) const {
       bool result = m_useCount[u_v<DxvkAccess::Write>].load() != 0;
       if (access == DxvkAccess::Read)
         result |= m_useCount[u_v<DxvkAccess::Read>].load() != 0;
       return result;
     }
     
+    template<DxvkAccess Access = DxvkAccess::Read>
+    inline bool isInUse() const;
+
     /**
      * \brief Acquires resource
      * 
@@ -52,6 +55,9 @@ namespace dxvk {
       if (access != DxvkAccess::None)
         m_useCount[to_int(access)] += 1;
     }
+
+    template<DxvkAccess Access>
+    inline void acquire();
 
     /**
      * \brief Releases resource
@@ -64,6 +70,9 @@ namespace dxvk {
         m_useCount[to_int(access)] -= 1;
     }
 
+    template<DxvkAccess Access>
+    inline void release();
+
     /**
      * \brief Waits for resource to become unused
      *
@@ -71,16 +80,56 @@ namespace dxvk {
      * using the resource with the given access type.
      * \param [in] access Access type to check for
      */
-    void waitIdle(DxvkAccess access = DxvkAccess::Read) const {
+    void waitIdle(DxvkAccess access) const {
       sync::spin(50000, [this, access] {
         return !isInUse(access);
       });
     }
     
+    template<DxvkAccess Access>
+    inline void waitIdle() const;
+
   private:
     
     std::atomic<uint32_t> m_useCount[2] = { 0u, 0u };
 
   };
   
+  /* isInUse() specialized for DxvkAccess::Read */
+  template<>
+  inline bool DxvkResource::isInUse<DxvkAccess::Read>() const {
+    return m_useCount[u_v<DxvkAccess::Write>].load() != 0
+        || m_useCount[u_v<DxvkAccess::Read>].load() != 0;
+  }
+
+  /* isInUse() specialized for DxvkAccess::Write and DxvkAccess::None */
+  template<DxvkAccess>
+  inline bool DxvkResource::isInUse() const {
+    return m_useCount[u_v<DxvkAccess::Write>].load() != 0;
+  }
+
+  /* acquire() specialized for DxvkAccess::Read and DxvkAccess::Write */
+  template<DxvkAccess Access>
+  inline void DxvkResource::acquire() {
+    m_useCount[u_v<Access>] += 1;
+  }
+
+  /* acquire() specialized for DxvkAccess::None (no-op) */
+  template<> inline void DxvkResource::acquire<DxvkAccess::None>() {}
+
+  /* release() specialized for DxvkAccess::Read and DxvkAccess::Write */
+  template<DxvkAccess Access>
+  inline void DxvkResource::release() {
+    m_useCount[u_v<Access>] -= 1;
+  }
+
+  /* release() specialized for DxvkAccess::None (no-op) */
+  template<> inline void DxvkResource::release<DxvkAccess::None>() {}
+
+  template<DxvkAccess Access>
+  inline void DxvkResource::waitIdle() const {
+    sync::spin(50000, [this] {
+      return !isInUse<Access>();
+    });
+  }
 }

@@ -27,7 +27,7 @@ namespace dxvk {
      */
     template<DxvkAccess Access>
     void trackResource(Rc<DxvkResource>&& rc) {
-      rc->acquire(Access);
+      rc->acquire<Access>();
       m_resources.emplace_back(std::move(rc), Access);
     }
     
