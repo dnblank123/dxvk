@@ -4038,26 +4038,27 @@ namespace dxvk {
       ? DxvkAccess::Write
       : DxvkAccess::Read;
 
-    if (!Resource->isInUse(access))
+    if (!Resource->isInUse(access)) {
       SynchronizeCsThread();
 
-    if (Resource->isInUse(access)) {
-      if (MapFlags & D3DLOCK_DONOTWAIT) {
-        // We don't have to wait, but misbehaving games may
-        // still try to spin on `Map` until the resource is
-        // idle, so we should flush pending commands
-        FlushImplicit(FALSE);
-        return false;
-      }
-      else {
-        // Make sure pending commands using the resource get
-        // executed on the the GPU if we have to wait for it
-        Flush();
-        SynchronizeCsThread();
-
-        Resource->waitIdle(access);
-      }
+      if (!Resource->isInUse(access))
+        return true;
     }
+
+    if (MapFlags & D3DLOCK_DONOTWAIT) {
+      // We don't have to wait, but misbehaving games may
+      // still try to spin on `Map` until the resource is
+      // idle, so we should flush pending commands
+      FlushImplicit(FALSE);
+      return false;
+    }
+
+    // Make sure pending commands using the resource get
+    // executed on the the GPU if we have to wait for it
+    Flush();
+    SynchronizeCsThread();
+
+    Resource->waitIdle(access);
 
     return true;
   }
