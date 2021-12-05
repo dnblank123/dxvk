@@ -36,9 +36,9 @@ namespace dxvk {
      * \returns \c true if the resource is in use
      */
     bool isInUse(DxvkAccess access = DxvkAccess::Read) const {
-      bool result = m_useCountW.load() != 0;
+      bool result = m_useCount[u_v<DxvkAccess::Write>].load() != 0;
       if (access == DxvkAccess::Read)
-        result |= m_useCountR.load() != 0;
+        result |= m_useCount[u_v<DxvkAccess::Read>].load() != 0;
       return result;
     }
     
@@ -49,11 +49,8 @@ namespace dxvk {
      * \param Access Resource access type
      */
     void acquire(DxvkAccess access) {
-      if (access != DxvkAccess::None) {
-        (access == DxvkAccess::Read
-          ? m_useCountR
-          : m_useCountW) += 1;
-      }
+      if (access != DxvkAccess::None)
+        m_useCount[to_int(access)] += 1;
     }
 
     /**
@@ -63,11 +60,8 @@ namespace dxvk {
      * \param Access Resource access type
      */
     void release(DxvkAccess access) {
-      if (access != DxvkAccess::None) {
-        (access == DxvkAccess::Read
-          ? m_useCountR
-          : m_useCountW) -= 1;
-      }
+      if (access != DxvkAccess::None)
+        m_useCount[to_int(access)] -= 1;
     }
 
     /**
@@ -85,8 +79,7 @@ namespace dxvk {
     
   private:
     
-    std::atomic<uint32_t> m_useCountR = { 0u };
-    std::atomic<uint32_t> m_useCountW = { 0u };
+    std::atomic<uint32_t> m_useCount[2] = { 0u, 0u };
 
   };
   
