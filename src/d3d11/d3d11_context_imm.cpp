@@ -540,22 +540,17 @@ namespace dxvk {
   }
   
   
-  bool D3D11ImmediateContext::WaitForResource(
+  template<DxvkAccess Access>
+  bool D3D11ImmediateContext::wait_for_resource(
     const Rc<DxvkResource>&                 Resource,
-          D3D11_MAP                         MapType,
           UINT                              MapFlags) {
-    // Determine access type to wait for based on map mode
-    DxvkAccess access = MapType == D3D11_MAP_READ
-      ? DxvkAccess::Write
-      : DxvkAccess::Read;
-    
     // Wait for the any pending D3D11 command to be executed
     // on the CS thread so that we can determine whether the
     // resource is currently in use or not.
-    if (!Resource->isInUse(access)) {
+    if (!Resource->isInUse<Access>()) {
       SynchronizeCsThread();
 
-      if (!Resource->isInUse(access))
+      if (!Resource->isInUse<Access>())
         return true;
     }
 
@@ -572,12 +567,23 @@ namespace dxvk {
     Flush();
     SynchronizeCsThread();
 
-    Resource->waitIdle(access);
+    Resource->waitIdle<Access>();
     
     return true;
   }
   
   
+  bool D3D11ImmediateContext::WaitForResource(
+    const Rc<DxvkResource>&                 Resource,
+          D3D11_MAP                         MapType,
+          UINT                              MapFlags) {
+    // Determine access type to wait for based on map mode
+    return MapType == D3D11_MAP_READ
+      ? wait_for_resource<DxvkAccess::Write>(Resource, MapFlags)
+      : wait_for_resource<DxvkAccess::Read>(Resource, MapFlags);
+  }
+
+
   void D3D11ImmediateContext::EmitCsChunk(DxvkCsChunkRef&& chunk) {
     m_csThread.dispatchChunk(std::move(chunk));
     m_csIsBusy = true;

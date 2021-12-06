@@ -146,6 +146,11 @@ namespace dxvk {
     
     void SynchronizeDevice();
     
+    template<DxvkAccess Access>
+    bool wait_for_resource(
+      const Rc<DxvkResource>&                 Resource,
+            UINT                              MapFlags);
+
     bool WaitForResource(
       const Rc<DxvkResource>&                 Resource,
             D3D11_MAP                         MapType,
