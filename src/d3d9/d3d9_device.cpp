@@ -4026,22 +4026,18 @@ namespace dxvk {
     return m_adapter->GetUnsupportedFormatInfo(Format);
   }
 
-  bool D3D9DeviceEx::WaitForResource(
+  template<DxvkAccess Access>
+  bool D3D9DeviceEx::wait_for_resource(
   const Rc<DxvkResource>&                 Resource,
         DWORD                             MapFlags) {
     // Wait for the any pending D3D9 command to be executed
     // on the CS thread so that we can determine whether the
     // resource is currently in use or not.
 
-    // Determine access type to wait for based on map mode
-    DxvkAccess access = (MapFlags & D3DLOCK_READONLY)
-      ? DxvkAccess::Write
-      : DxvkAccess::Read;
-
-    if (!Resource->isInUse(access)) {
+    if (!Resource->isInUse<Access>()) {
       SynchronizeCsThread();
 
-      if (!Resource->isInUse(access))
+      if (!Resource->isInUse<Access>())
         return true;
     }
 
@@ -4058,9 +4054,19 @@ namespace dxvk {
     Flush();
     SynchronizeCsThread();
 
-    Resource->waitIdle(access);
+    Resource->waitIdle<Access>();
 
     return true;
+  }
+
+
+  bool D3D9DeviceEx::WaitForResource(
+  const Rc<DxvkResource>&                 Resource,
+        DWORD                             MapFlags) {
+    // Determine access type to wait for based on map mode
+    return (MapFlags & D3DLOCK_READONLY)
+      ? wait_for_resource<DxvkAccess::Write>(Resource, MapFlags)
+      : wait_for_resource<DxvkAccess::Read>(Resource, MapFlags);
   }
 
 

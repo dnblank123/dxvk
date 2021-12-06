@@ -660,6 +660,11 @@ namespace dxvk {
     const DxvkFormatInfo* UnsupportedFormatInfo(
       D3D9Format            Format) const;
 
+    template<DxvkAccess Access>
+    bool wait_for_resource(
+      const Rc<DxvkResource>&                 Resource,
+            DWORD                             MapFlags);
+
     bool WaitForResource(
       const Rc<DxvkResource>&                 Resource,
             DWORD                             MapFlags);
