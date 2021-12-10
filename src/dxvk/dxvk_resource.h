@@ -35,12 +35,7 @@ namespace dxvk {
      * \param [in] access Access type to check for
      * \returns \c true if the resource is in use
      */
-    bool isInUse(DxvkAccess access) const {
-      bool result = m_useCount[u_v<DxvkAccess::Write>].load(std::memory_order_acquire) != 0;
-      if (access == DxvkAccess::Read && !result)
-        result = m_useCount[u_v<DxvkAccess::Read>].load(std::memory_order_acquire) != 0;
-      return result;
-    }
+    inline bool isInUse(DxvkAccess access) const;
     
     template<DxvkAccess Access = DxvkAccess::Read>
     inline bool isInUse() const;
@@ -53,7 +48,7 @@ namespace dxvk {
      */
     void acquire(DxvkAccess access) {
       if (access != DxvkAccess::None)
-        m_useCount[to_int(access)].fetch_add(1, std::memory_order_acquire);
+        m_useCount.u32[to_int(access)].fetch_add(1, std::memory_order_acquire);
     }
 
     template<DxvkAccess Access>
@@ -67,7 +62,7 @@ namespace dxvk {
      */
     void release(DxvkAccess access) {
       if (access != DxvkAccess::None)
-        m_useCount[to_int(access)].fetch_sub(1, std::memory_order_release);
+        m_useCount.u32[to_int(access)].fetch_sub(1, std::memory_order_release);
     }
 
     template<DxvkAccess Access>
@@ -91,27 +86,36 @@ namespace dxvk {
 
   private:
     
-    std::atomic<uint32_t> m_useCount[2] = { 0u, 0u };
+    union {
+      uint64_t              bits;
+      std::atomic<uint64_t> u64;
+      std::atomic<uint32_t> u32[2];
+    } m_useCount = { 0u };
 
   };
   
   /* isInUse() specialized for DxvkAccess::Read */
   template<>
   inline bool DxvkResource::isInUse<DxvkAccess::Read>() const {
-    return m_useCount[u_v<DxvkAccess::Write>].load(std::memory_order_acquire) != 0
-        || m_useCount[u_v<DxvkAccess::Read>].load(std::memory_order_acquire) != 0;
+    return m_useCount.u64.load(std::memory_order_acquire) != 0;
   }
 
   /* isInUse() specialized for DxvkAccess::Write and DxvkAccess::None */
   template<DxvkAccess>
   inline bool DxvkResource::isInUse() const {
-    return m_useCount[u_v<DxvkAccess::Write>].load(std::memory_order_acquire) != 0;
+    return m_useCount.u32[u_v<DxvkAccess::Write>].load(std::memory_order_acquire) != 0;
+  }
+
+  inline bool DxvkResource::isInUse(DxvkAccess access) const {
+    return access == DxvkAccess::Read
+      ? isInUse<DxvkAccess::Read>()
+      : isInUse<DxvkAccess::Write>();
   }
 
   /* acquire() specialized for DxvkAccess::Read and DxvkAccess::Write */
   template<DxvkAccess Access>
   inline void DxvkResource::acquire() {
-    m_useCount[u_v<Access>].fetch_add(1, std::memory_order_acquire);
+    m_useCount.u32[u_v<Access>].fetch_add(1, std::memory_order_acquire);
   }
 
   /* acquire() specialized for DxvkAccess::None (no-op) */
@@ -120,7 +124,7 @@ namespace dxvk {
   /* release() specialized for DxvkAccess::Read and DxvkAccess::Write */
   template<DxvkAccess Access>
   inline void DxvkResource::release() {
-    m_useCount[u_v<Access>].fetch_sub(1, std::memory_order_release);
+    m_useCount.u32[u_v<Access>].fetch_sub(1, std::memory_order_release);
   }
 
   /* release() specialized for DxvkAccess::None (no-op) */
