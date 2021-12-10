@@ -37,8 +37,8 @@ namespace dxvk {
      */
     bool isInUse(DxvkAccess access) const {
       bool result = m_useCount[u_v<DxvkAccess::Write>].load(std::memory_order_acquire) != 0;
-      if (access == DxvkAccess::Read)
-        result |= m_useCount[u_v<DxvkAccess::Read>].load(std::memory_order_acquire) != 0;
+      if (access == DxvkAccess::Read && !result)
+        result = m_useCount[u_v<DxvkAccess::Read>].load(std::memory_order_acquire) != 0;
       return result;
     }
     
