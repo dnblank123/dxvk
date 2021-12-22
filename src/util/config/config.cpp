@@ -503,6 +503,10 @@ namespace dxvk {
     { R"(\\RichardBurnsRally_SSE\.exe$)", {{
       { "d3d9.floatEmulation",              "Strict" },
     }} },
+    /* BlazBlue Centralfiction                  */
+    { R"(\\BBCF\.exe$)", {{
+      { "d3d9.floatEmulation",              "Strict" },
+    }} },
   }};
 
 
