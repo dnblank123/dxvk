@@ -4026,40 +4026,47 @@ namespace dxvk {
     return m_adapter->GetUnsupportedFormatInfo(Format);
   }
 
-  bool D3D9DeviceEx::WaitForResource(
+  template<DxvkAccess Access>
+  bool D3D9DeviceEx::wait_for_resource(
   const Rc<DxvkResource>&                 Resource,
         DWORD                             MapFlags) {
     // Wait for the any pending D3D9 command to be executed
     // on the CS thread so that we can determine whether the
     // resource is currently in use or not.
 
-    // Determine access type to wait for based on map mode
-    DxvkAccess access = (MapFlags & D3DLOCK_READONLY)
-      ? DxvkAccess::Write
-      : DxvkAccess::Read;
-
-    if (!Resource->isInUse(access))
+    if (!Resource->isInUse<Access>()) {
       SynchronizeCsThread();
 
-    if (Resource->isInUse(access)) {
-      if (MapFlags & D3DLOCK_DONOTWAIT) {
-        // We don't have to wait, but misbehaving games may
-        // still try to spin on `Map` until the resource is
-        // idle, so we should flush pending commands
-        FlushImplicit(FALSE);
-        return false;
-      }
-      else {
-        // Make sure pending commands using the resource get
-        // executed on the the GPU if we have to wait for it
-        Flush();
-        SynchronizeCsThread();
-
-        Resource->waitIdle(access);
-      }
+      if (!Resource->isInUse<Access>())
+        return true;
     }
 
+    if (MapFlags & D3DLOCK_DONOTWAIT) {
+      // We don't have to wait, but misbehaving games may
+      // still try to spin on `Map` until the resource is
+      // idle, so we should flush pending commands
+      FlushImplicit(FALSE);
+      return false;
+    }
+
+    // Make sure pending commands using the resource get
+    // executed on the the GPU if we have to wait for it
+    Flush();
+    SynchronizeCsThread();
+
+    Resource->waitIdle<Access>();
+
     return true;
+  }
+
+
+  bool D3D9DeviceEx::WaitForResource(
+  const Rc<DxvkResource>&                 Resource,
+        DWORD                             MapFlags) {
+    // Determine access type to wait for based on map mode
+    return (MapFlags & D3DLOCK_READONLY)
+      ? wait_for_resource<DxvkAccess::Write>(Resource, MapFlags)
+      : wait_for_resource<DxvkAccess::Read>(Resource, MapFlags);
   }
 
 

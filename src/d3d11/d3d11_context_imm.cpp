@@ -540,42 +540,50 @@ namespace dxvk {
   }
   
   
-  bool D3D11ImmediateContext::WaitForResource(
+  template<DxvkAccess Access>
+  bool D3D11ImmediateContext::wait_for_resource(
     const Rc<DxvkResource>&                 Resource,
-          D3D11_MAP                         MapType,
           UINT                              MapFlags) {
-    // Determine access type to wait for based on map mode
-    DxvkAccess access = MapType == D3D11_MAP_READ
-      ? DxvkAccess::Write
-      : DxvkAccess::Read;
-    
     // Wait for the any pending D3D11 command to be executed
     // on the CS thread so that we can determine whether the
     // resource is currently in use or not.
-    if (!Resource->isInUse(access))
+    if (!Resource->isInUse<Access>()) {
       SynchronizeCsThread();
-    
-    if (Resource->isInUse(access)) {
-      if (MapFlags & D3D11_MAP_FLAG_DO_NOT_WAIT) {
-        // We don't have to wait, but misbehaving games may
-        // still try to spin on `Map` until the resource is
-        // idle, so we should flush pending commands
-        FlushImplicit(FALSE);
-        return false;
-      } else {
-        // Make sure pending commands using the resource get
-        // executed on the the GPU if we have to wait for it
-        Flush();
-        SynchronizeCsThread();
-        
-        Resource->waitIdle(access);
-      }
+
+      if (!Resource->isInUse<Access>())
+        return true;
     }
+
+    if (MapFlags & D3D11_MAP_FLAG_DO_NOT_WAIT) {
+      // We don't have to wait, but misbehaving games may
+      // still try to spin on `Map` until the resource is
+      // idle, so we should flush pending commands
+      FlushImplicit(FALSE);
+      return false;
+    }
+
+    // Make sure pending commands using the resource get
+    // executed on the the GPU if we have to wait for it
+    Flush();
+    SynchronizeCsThread();
+
+    Resource->waitIdle<Access>();
     
     return true;
   }
   
   
+  bool D3D11ImmediateContext::WaitForResource(
+    const Rc<DxvkResource>&                 Resource,
+          D3D11_MAP                         MapType,
+          UINT                              MapFlags) {
+    // Determine access type to wait for based on map mode
+    return MapType == D3D11_MAP_READ
+      ? wait_for_resource<DxvkAccess::Write>(Resource, MapFlags)
+      : wait_for_resource<DxvkAccess::Read>(Resource, MapFlags);
+  }
+
+
   void D3D11ImmediateContext::EmitCsChunk(DxvkCsChunkRef&& chunk) {
     m_csThread.dispatchChunk(std::move(chunk));
     m_csIsBusy = true;
