@@ -273,6 +273,13 @@ namespace dxvk {
     { R"(\\ffxiv_dx11\.exe$)", {{
       { "dxvk.shrinkNvidiaHvvHeap",         "True" },
     }} },
+    /* God of War - relies on NVAPI/AMDAGS for    *
+     * barrier stuff, needs nvapi for DLSS        */
+    { R"(\\GoW\.exe$)", {{
+      { "d3d11.ignoreGraphicsBarriers",     "True" },
+      { "d3d11.relaxedBarriers",            "True" },
+      { "dxgi.nvapiHack",                   "False" },
+    }} },
 
     /**********************************************/
     /* D3D9 GAMES                                 */
