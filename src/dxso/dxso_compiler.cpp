@@ -2056,7 +2056,7 @@ namespace dxvk {
           DxsoRegisterValue cmp;
           cmp.type  = { DxsoScalarType::Bool, result.type.ccount };
           cmp.id    = m_module.opFOrdEqual(getVectorTypeId(cmp.type),
-            exponent, m_module.constfReplicant(256.0f, cmp.type.ccount));
+            exponent, m_module.constfReplicant(512.0f, cmp.type.ccount));
 
           result.id = m_module.opSelect(typeId, cmp.id,
             m_module.constfReplicant(1.0f, cmp.type.ccount), result.id);
