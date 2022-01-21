@@ -24,7 +24,7 @@ namespace dxvk {
 
     // Disable early discard on Nvidia because it may hurt performance
     if (adapter->matchesDriver(DxvkGpuVendor::Nvidia, VK_DRIVER_ID_NVIDIA_PROPRIETARY_KHR, 0, 0))
-      useSubgroupOpsForEarlyDiscard = false;
+      useSubgroupOpsForEarlyDiscard = true;
     
     // Apply shader-related options
     strictConstantCopies = options.strictConstantCopies;
