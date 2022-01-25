@@ -13,11 +13,11 @@ namespace dxvk {
     DxsoOptions(D3D9DeviceEx* pDevice, const D3D9Options& options);
 
     /// Use a SPIR-V extension to implement D3D-style discards
-    bool useDemoteToHelperInvocation = false;
+    bool useDemoteToHelperInvocation = true;
 
     /// Use subgroup operations to discard fragment
     /// shader invocations if derivatives remain valid.
-    bool useSubgroupOpsForEarlyDiscard = false;
+    bool useSubgroupOpsForEarlyDiscard = true;
 
     /// True:  Copy our constant set into UBO if we are relative indexing ever.
     /// False: Copy our constant set into UBO if we are relative indexing at the start of a defined constant
