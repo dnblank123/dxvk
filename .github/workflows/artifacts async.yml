@@ -22,10 +22,12 @@ jobs:
       uses: Joshua-Ashton/arch-mingw-github-action@v6
       with:
         command: |
+          export VERSION_NAME="${GITHUB_REF##*/}-${GITHUB_SHA##*/}"
           curl -O https://raw.githubusercontent.com/Sporif/dxvk-async/master/dxvk-async.patch
           patch -p1 < dxvk-async.patch
           echo "dxvk.enableAsync = true" >> dxvk.conf
           ./package-release.sh ${VERSION_NAME} build --no-package
+          echo "VERSION_NAME=${VERSION_NAME}" >> $GITHUB_ENV
     - name: Upload artifacts
       id: upload-artifacts
       uses: actions/upload-artifact@v2
