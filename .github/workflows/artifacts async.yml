@@ -40,11 +40,11 @@ jobs:
       with:
         command: |
            curl -O https://raw.githubusercontent.com/Sporif/dxvk-async/master/dxvk-async.patch
-          patch -p1 < dxvk-async.patch
-          echo "dxvk.enableAsync = true" >> dxvk.conf
-          ./package-release.sh "${{ steps.version_name.outputs.name }}-async" build --no-package
-    - name: Upload artifacts
-      id: upload-artifacts
+           patch -p1 < dxvk-async.patch
+           echo "dxvk.enableAsync = true" >> dxvk.conf
+           ./package-release.sh "${{ steps.version_name.outputs.name }}-async" build --no-package
+    - name: Upload async
+      id: upload-async
       uses: actions/upload-artifact@v2
       with:
         name: dxvk-${{ env.VERSION_NAME }}
