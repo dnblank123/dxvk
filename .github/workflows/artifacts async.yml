@@ -1,4 +1,4 @@
-name: Artifacts (Package)
+name: Artifacts Async (Package)
 
 on: [push, pull_request, workflow_dispatch]
 
@@ -22,18 +22,15 @@ jobs:
       uses: Joshua-Ashton/arch-mingw-github-action@v6
       with:
         command: |
-          export VERSION_NAME="${GITHUB_REF##*/}-${GITHUB_SHA##*/}"
-          ./package-release.sh ${VERSION_NAME} build --no-package
-          echo "VERSION_NAME=${VERSION_NAME}" >> $GITHUB_ENV
           curl -O https://raw.githubusercontent.com/Sporif/dxvk-async/master/dxvk-async.patch
           patch -p1 < dxvk-async.patch
           echo "dxvk.enableAsync = true" >> dxvk.conf
-          ./package-release.sh "${{ steps.version_name.outputs.name }}-async" build --no-package
+          ./package-release.sh ${VERSION_NAME} build --no-package
     - name: Upload artifacts
       id: upload-artifacts
       uses: actions/upload-artifact@v2
       with:
-        name: dxvk-${{ env.VERSION_NAME }}-async
-        path: build/dxvk-${{ env.VERSION_NAME }}-async
+        name: dxvk-${{ env.VERSION_NAME }}
+        path: build/dxvk-${{ env.VERSION_NAME }}
         if-no-files-found: error
  
