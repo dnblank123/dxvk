@@ -330,7 +330,7 @@ namespace dxvk {
     constexpr std::array<D3D9Format, 8> singleChannelFormats = {
       D3D9Format::INTZ, D3D9Format::DF16, D3D9Format::DF24,
       D3D9Format::R16F, D3D9Format::R32F, D3D9Format::A8,
-      D3D9Format::L8, D3D9Format::L16
+      D3D9Format::L8, D3D9Format::L16, D3D9Format::D24S8
     };
 
     return std::find(singleChannelFormats.begin(), singleChannelFormats.end(), m_desc.Format) != singleChannelFormats.end();
