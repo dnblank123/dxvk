@@ -739,9 +739,21 @@ namespace dxvk {
     if (unlikely(srcTexInfo->Desc()->Pool != D3DPOOL_SYSTEMMEM || dstTexInfo->Desc()->Pool != D3DPOOL_DEFAULT))
       return D3DERR_INVALIDCALL;
 
+    if (srcTexInfo->Desc()->MipLevels < dstTexInfo->Desc()->MipLevels)
+      return D3DERR_INVALIDCALL;
+
+    if (dstTexInfo->Desc()->Format != srcTexInfo->Desc()->Format)
+      return D3DERR_INVALIDCALL;
+
     const Rc<DxvkImage> dstImage  = dstTexInfo->GetImage();
-    uint32_t mipLevels   = std::min(srcTexInfo->Desc()->MipLevels, dstTexInfo->Desc()->MipLevels);
+    uint32_t mipLevels   = dstTexInfo->Desc()->MipLevels;
     uint32_t arraySlices = std::min(srcTexInfo->Desc()->ArraySize, dstTexInfo->Desc()->ArraySize);
+
+    uint32_t srcMipOffset = srcTexInfo->Desc()->MipLevels - mipLevels;
+    VkExtent3D srcFirstMipExtent = util::computeMipLevelExtent(srcTexInfo->GetExtent(), srcMipOffset);
+    VkExtent3D dstFirstMipExtent = dstTexInfo->GetExtent();
+    if (srcFirstMipExtent != dstFirstMipExtent)
+      return D3DERR_INVALIDCALL;
 
     if (unlikely(srcTexInfo->IsAutomaticMip() && !dstTexInfo->IsAutomaticMip()))
       return D3DERR_INVALIDCALL;
@@ -761,11 +773,12 @@ namespace dxvk {
       };
       VkOffset3D mip0Offset = { int32_t(box.Left), int32_t(box.Top), int32_t(box.Front) };
 
-      for (uint32_t m = 0; m < mipLevels; m++) {
-        uint32_t srcSubresource = srcTexInfo->CalcSubresource(a, m);
-        uint32_t dstSubresource = dstTexInfo->CalcSubresource(a, m);
-        VkExtent3D extent = util::computeMipLevelExtent(mip0Extent, m);
-        VkOffset3D offset = util::computeMipLevelOffset(mip0Offset, m);
+      for (uint32_t dstMip = 0; dstMip < mipLevels; dstMip++) {
+        uint32_t srcMip = dstMip + srcMipOffset;
+        uint32_t srcSubresource = srcTexInfo->CalcSubresource(a, srcMip);
+        uint32_t dstSubresource = dstTexInfo->CalcSubresource(a, dstMip);
+        VkExtent3D extent = util::computeMipLevelExtent(mip0Extent, srcMip);
+        VkOffset3D offset = util::computeMipLevelOffset(mip0Offset, srcMip);
 
         UpdateTextureFromBuffer(dstTexInfo, srcTexInfo, dstSubresource, srcSubresource, offset, extent, offset);
         dstTexInfo->SetWrittenByGPU(dstSubresource, true);
