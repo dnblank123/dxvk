@@ -17,14 +17,13 @@ namespace dxvk {
     { R"(\\DragonNest_x64\.exe$)", {{
     { "d3d9.memoryTrackTest",             "True" },  
     { "d3d9.alphaTestWiggleRoom",         "True" },
-    { "d3d9.tearFree",            		    "False" },  
-    { "d3d9.presentInterval",         	     "0" },
+    { "d3d9.tearFree",                    "False" },
     }} },
      /* League of Legends*/ 
 	  { R"(\\League of Legends\.exe$)", {{
     { "d3d11.maxTessFactor",              "8" },
-	  { "dxgi.maxFrameLatency",             "4" },
-	  { "d3d11.relaxedBarriers",            "True" },
+    { "dxgi.maxFrameLatency",             "4" },
+    { "d3d11.relaxedBarriers",            "True" },
     { "d3d11.ignoreGraphicsBarriers",     "True" },
     { "dxgi.maxFrameLatency",             "1" },
     { "dxgi.tearFree",                    "False" },
