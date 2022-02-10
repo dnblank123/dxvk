@@ -3791,7 +3791,7 @@ void DxsoCompiler::emitControlFlowGenericLoop(
         // and around 1 / 2048 for A32F formats and 1 / 4096 for A16F formats (It makes no sense to me too)
         // so anyway, we're just going to round this to a precision of 1 / 4096 and hopefully this should make things happy
         // everywhere.
-        const uint32_t alphaSizeId = m_module.constf32(256.0f);
+        const uint32_t alphaSizeId = m_module.constf32(128.0f);
 
         alphaId = m_module.opFMul(floatType, alphaId, alphaSizeId);
         alphaId = m_module.opRound(floatType, alphaId);
