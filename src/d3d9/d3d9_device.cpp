@@ -913,6 +913,7 @@ namespace dxvk {
     });
 
     dstTexInfo->SetWrittenByGPU(dst->GetSubresource(), true);
+    TrackTextureMappingBufferSequenceNumber(dstTexInfo, dst->GetSubresource());
 
     return D3D_OK;
   }
@@ -2678,6 +2679,7 @@ namespace dxvk {
     }
 
     dst->SetWrittenByGPU(true);
+    TrackBufferMappingBufferSequenceNumber(dst);
 
     return D3D_OK;
   }
@@ -4529,6 +4531,8 @@ namespace dxvk {
     if (pResource->IsAutomaticMip())
       MarkTextureMipsDirty(pResource);
 
+    TrackTextureMappingBufferSequenceNumber(pResource, Subresource);
+
     return D3D_OK;
   }
 
@@ -4729,7 +4733,7 @@ namespace dxvk {
 
 
   void D3D9DeviceEx::EmitCsChunk(DxvkCsChunkRef&& chunk) {
-    m_csThread.dispatchChunk(std::move(chunk));
+    m_csSeqNum = m_csThread.dispatchChunk(std::move(chunk));
     m_csIsBusy = true;
   }
 
@@ -7331,6 +7335,17 @@ namespace dxvk {
     SynchronizeCsThread();
 
     return D3D_OK;
+  }
+
+  void D3D9DeviceEx::TrackBufferMappingBufferSequenceNumber(
+        D3D9CommonBuffer* pResource) {
+    pResource->TrackMappingBufferSequenceNumber(m_csSeqNum + 1);
+  }
+
+  void D3D9DeviceEx::TrackTextureMappingBufferSequenceNumber(
+      D3D9CommonTexture* pResource,
+      UINT Subresource) {
+    pResource->TrackMappingBufferSequenceNumber(Subresource, m_csSeqNum + 1);
   }
 
 }
