@@ -32,30 +32,42 @@ namespace dxvk {
      * the resource by the GPU matching the given access
      * type. Note that checking for reads will also return
      * \c true if the resource is being written to.
-     * \tparam Access Access type to check for
+     * \param [in] access Access type to check for
      * \returns \c true if the resource is in use
      */
-    template<DxvkAccess Access = DxvkAccess::Read>
-    inline bool isInUse() const;
-
+    bool isInUse(DxvkAccess access = DxvkAccess::Read) const {
+      bool result = m_useCountW.load() != 0;
+      if (access == DxvkAccess::Read)
+        result |= m_useCountR.load() != 0;
+      return result;
+    }
+    
     /**
      * \brief Acquires resource
      * 
      * Increments use count for the given access type.
-     * \tparam Access Resource access type
+     * \param Access Resource access type
      */
-    template<DxvkAccess Access>
-    inline void acquire();
+    void acquire(DxvkAccess access) {
+      if (access != DxvkAccess::None) {
+        (access == DxvkAccess::Read
+          ? m_useCountR
+          : m_useCountW) += 1;
+      }
+    }
 
     /**
      * \brief Releases resource
      * 
      * Decrements use count for the given access type.
-     * \param [in] access Resource access type
+     * \param Access Resource access type
      */
     void release(DxvkAccess access) {
-      if (access != DxvkAccess::None)
-        m_useCount.u32[to_int(access)].fetch_sub(1, std::memory_order_release);
+      if (access != DxvkAccess::None) {
+        (access == DxvkAccess::Read
+          ? m_useCountR
+          : m_useCountW) -= 1;
+      }
     }
 
     /**
@@ -63,46 +75,19 @@ namespace dxvk {
      *
      * Blocks calling thread until the GPU finishes
      * using the resource with the given access type.
-     * \tparam Access Access type to check for
+     * \param [in] access Access type to check for
      */
-    template<DxvkAccess Access>
-    inline void waitIdle() const;
-
+    void waitIdle(DxvkAccess access = DxvkAccess::Read) const {
+      sync::spin(50000, [this, access] {
+        return !isInUse(access);
+      });
+    }
+    
   private:
     
-    union {
-      uint64_t              bits;
-      std::atomic<uint64_t> u64;
-      std::atomic<uint32_t> u32[2];
-    } m_useCount = { 0u };
+    std::atomic<uint32_t> m_useCountR = { 0u };
+    std::atomic<uint32_t> m_useCountW = { 0u };
 
   };
   
-  /* isInUse() specialized for DxvkAccess::Read */
-  template<>
-  inline bool DxvkResource::isInUse<DxvkAccess::Read>() const {
-    return m_useCount.u64.load(std::memory_order_acquire) != 0;
-  }
-
-  /* isInUse() specialized for DxvkAccess::Write and DxvkAccess::None */
-  template<DxvkAccess>
-  inline bool DxvkResource::isInUse() const {
-    return m_useCount.u32[u_v<DxvkAccess::Write>].load(std::memory_order_acquire) != 0;
-  }
-
-  /* acquire() specialized for DxvkAccess::Read and DxvkAccess::Write */
-  template<DxvkAccess Access>
-  inline void DxvkResource::acquire() {
-    m_useCount.u32[u_v<Access>].fetch_add(1, std::memory_order_acquire);
-  }
-
-  /* acquire() specialized for DxvkAccess::None (no-op) */
-  template<> inline void DxvkResource::acquire<DxvkAccess::None>() {}
-
-  template<DxvkAccess Access>
-  inline void DxvkResource::waitIdle() const {
-    sync::spin(50000, [this] {
-      return !isInUse<Access>();
-    });
-  }
 }
