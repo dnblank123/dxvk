@@ -26,9 +26,12 @@
 
 #include "d3d9_shader_permutations.h"
 
+#include <unordered_set>
 #include <vector>
 #include <type_traits>
 #include <unordered_map>
+
+#include "../util/util_lru.h"
 
 namespace dxvk {
 
@@ -87,6 +90,55 @@ namespace dxvk {
   struct D3D9BufferSlice {
     DxvkBufferSlice slice = {};
     void*           mapPtr = nullptr;
+  };
+
+  struct D3D9MappedResource {
+      union {
+          D3D9CommonTexture *texture;
+          D3D9CommonBuffer *buffer;
+      };
+      bool isBuffer;
+
+      D3D9MappedResource() = default;
+
+      D3D9MappedResource(const D3D9MappedResource& other) {
+        texture = other.texture;
+        isBuffer = other.isBuffer;
+      }
+      D3D9MappedResource& operator=(const D3D9MappedResource& other) {
+        texture = other.texture;
+        isBuffer = other.isBuffer;
+        return *this;
+      }
+
+      static D3D9MappedResource fromBuffer(D3D9CommonBuffer* buffer) {
+        D3D9MappedResource mappedResource;
+        mappedResource.isBuffer = true;
+        mappedResource.buffer = buffer;
+        return mappedResource;
+      }
+
+      static D3D9MappedResource fromTexture(D3D9CommonTexture* texture) {
+        D3D9MappedResource mappedResource;
+        mappedResource.isBuffer = false;
+        mappedResource.texture = texture;
+        return mappedResource;
+      }
+
+      size_t hash() const {
+        return reinterpret_cast<size_t>(texture);
+        //return isBuffer ? reinterpret_cast<size_t>(buffer) : reinterpret_cast<size_t>(texture);
+      }
+
+      bool eq(const D3D9MappedResource& b) const {
+        return texture == b.texture;
+        /*
+        if (isBuffer) {
+          return b.isBuffer && buffer == b.buffer;
+        }  else {
+          return !b.isBuffer && texture == b.texture;
+        }*/
+      }
   };
 
   class D3D9DeviceEx final : public ComObjectClamp<IDirect3DDevice9Ex> {
@@ -935,6 +987,13 @@ namespace dxvk {
       return &m_memoryAllocator;
     }
 
+    void* MapTexture(D3D9CommonTexture* pTexture, UINT Subresource);
+    void TouchMappedTexture(D3D9CommonTexture* pTexture);
+    void RemoveMappedTexture(D3D9CommonTexture* pTexture);
+
+    void* MapBuffer(D3D9CommonBuffer* pBuffer);
+    void RemoveMappedBuffer(D3D9CommonBuffer* pBuffer);
+
   private:
 
     DxvkCsChunkRef AllocCsChunk() {
@@ -1146,6 +1205,8 @@ namespace dxvk {
       D3D9CommonTexture* pResource,
       UINT Subresource);
 
+    void UnmapResources();
+
     uint64_t GetCurrentSequenceNumber();
 
     Com<D3D9InterfaceEx>            m_parent;
@@ -1281,6 +1342,10 @@ namespace dxvk {
     std::atomic<int32_t>            m_samplerCount    = { 0 };
 
     Direct3DState9                  m_state;
+
+#ifdef D3D9_ALLOW_UNMAPPING
+    lru_list<D3D9MappedResource>    m_mappedResources;
+#endif
   };
 
 }

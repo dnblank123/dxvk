@@ -154,6 +154,9 @@ namespace dxvk {
 
     /// Disable direct buffer mapping
     bool allowDirectBufferMapping;
+
+    /// How much virtual memory will be used for resources.
+    int32_t resourceMemory;
   };
 
 }
