@@ -4,8 +4,7 @@
 namespace dxvk::sync {
 
   void RecursiveSpinlock::lock() {
-    uint32_t threadId = GetCurrentThreadId();
-    spin(2000, [this, threadId] { return try_lock(threadId); });
+    spin(2000, [this] { return try_lock(); });
   }
 
 
@@ -17,7 +16,8 @@ namespace dxvk::sync {
   }
 
 
-  bool RecursiveSpinlock::try_lock(uint32_t threadId) {
+  bool RecursiveSpinlock::try_lock() {
+    uint32_t threadId = GetCurrentThreadId();
     uint32_t expected = 0;
 
     bool status = m_owner.compare_exchange_weak(

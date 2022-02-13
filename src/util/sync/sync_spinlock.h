@@ -56,7 +56,7 @@ namespace dxvk::sync {
     }
     
     bool try_lock() {
-      return likely(!m_lock.load(std::memory_order_relaxed))
+      return likely(!m_lock.load())
           && likely(!m_lock.exchange(1, std::memory_order_acquire));
     }
     
