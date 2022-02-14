@@ -4013,7 +4013,7 @@ namespace dxvk {
         Flush();
         SynchronizeCsThread();
 
-        Resource->waitIdle(access);
+        m_dxvkDevice->waitForResource(Resource, access);
       }
     }
 
