@@ -7,6 +7,7 @@
 #include "../dxvk/dxvk_device.h"
 
 #include "../util/util_bit.h"
+#include <minwindef.h>
 
 namespace dxvk {
 
@@ -140,20 +141,12 @@ namespace dxvk {
       return m_resolveImage;
     }
 
-    const Rc<DxvkBuffer>& GetBuffer(UINT Subresource) {
-      return m_buffers[Subresource];
+    void* GetLockingData(UINT Subresource) const {
+      return m_lockingData[Subresource];
     }
 
-
-    DxvkBufferSliceHandle GetMappedSlice(UINT Subresource) {
-      return m_mappedSlices[Subresource];
-    }
-
-
-    DxvkBufferSliceHandle DiscardMapSlice(UINT Subresource) {
-      DxvkBufferSliceHandle handle = m_buffers[Subresource]->allocSlice();
-      m_mappedSlices[Subresource] = handle;
-      return handle;
+    const Rc<DxvkBuffer>& GetReadbackBuffer(UINT Subresource) {
+      return m_readbackBuffers[Subresource];
     }
 
     /**
@@ -214,15 +207,17 @@ namespace dxvk {
       return Face * m_desc.MipLevels + MipLevel;
     }
 
+    void EnsureReadbackBuffer(UINT Subresource);
+
     /**
      * \brief Creates buffers
      * Creates mapping and staging buffers for all subresources
      * allocates new buffers if necessary
      */
-    void CreateBuffers() {
+    void EnsureLockingData() {
       const uint32_t count = CountSubresources();
       for (uint32_t i = 0; i < count; i++)
-        CreateBufferSubresource(i);
+        EnsureLockingData(i);
     }
 
     /**
@@ -231,15 +226,20 @@ namespace dxvk {
      * allocates new buffers if necessary
      * \returns Whether an allocation happened
      */
-    bool CreateBufferSubresource(UINT Subresource);
+    bool EnsureLockingData(UINT Subresource);
 
     /**
      * \brief Destroys a buffer
      * Destroys mapping and staging buffers for a given subresource
      */
-    void DestroyBufferSubresource(UINT Subresource) {
-      m_buffers[Subresource] = nullptr;
+    void FreeLockingData(UINT Subresource) {
+      free(m_lockingData[Subresource]);
+      m_lockingData[Subresource] = nullptr;
       SetNeedsReadback(Subresource, true);
+    }
+
+    void DestroyReadbackBuffer(UINT Subresource) {
+      m_readbackBuffers[Subresource] = nullptr;
     }
 
     bool IsDynamic() const {
@@ -429,6 +429,11 @@ namespace dxvk {
 
     static VkImageType GetImageTypeFromResourceType(
             D3DRESOURCETYPE  Dimension);
+    /**
+     * \brief Mip level
+     * \returns Size of packed mip level in bytes
+     */
+    VkDeviceSize GetMipSize(UINT Subresource) const;
 
   private:
 
@@ -440,9 +445,9 @@ namespace dxvk {
     Rc<DxvkImage>                 m_image;
     Rc<DxvkImage>                 m_resolveImage;
     D3D9SubresourceArray<
-      Rc<DxvkBuffer>>             m_buffers;
+      Rc<DxvkBuffer>>              m_readbackBuffers;
     D3D9SubresourceArray<
-      DxvkBufferSliceHandle>      m_mappedSlices;
+      void*>                      m_lockingData = {};
 
     D3D9_VK_FORMAT_MAPPING        m_mapping;
 
@@ -473,11 +478,6 @@ namespace dxvk {
 
     std::array<D3DBOX, 6>         m_dirtyBoxes;
 
-    /**
-     * \brief Mip level
-     * \returns Size of packed mip level in bytes
-     */
-    VkDeviceSize GetMipSize(UINT Subresource) const;
 
     Rc<DxvkImage> CreatePrimaryImage(D3DRESOURCETYPE ResourceType, bool TryOffscreenRT) const;
 

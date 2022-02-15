@@ -63,7 +63,7 @@ namespace dxvk {
     }
 
     if (m_mapMode == D3D9_COMMON_TEXTURE_MAP_MODE_SYSTEMMEM)
-      CreateBuffers();
+      EnsureLockingData();
 
     m_exposedMipLevels = m_desc.MipLevels;
 
@@ -75,6 +75,9 @@ namespace dxvk {
   D3D9CommonTexture::~D3D9CommonTexture() {
     if (m_size != 0)
       m_device->ChangeReportedMemory(m_size);
+
+    for (uint32_t i = 0; i < CountSubresources(); i++)
+      FreeLockingData(i);
   }
 
 
@@ -155,9 +158,17 @@ namespace dxvk {
   }
 
 
-  bool D3D9CommonTexture::CreateBufferSubresource(UINT Subresource) {
-    if (m_buffers[Subresource] != nullptr)
+  bool D3D9CommonTexture::EnsureLockingData(UINT Subresource) {
+    if (m_lockingData[Subresource] != nullptr)
       return false;
+
+    m_lockingData[Subresource] = malloc(GetMipSize(Subresource));
+    return true;
+  }
+
+  void D3D9CommonTexture::EnsureReadbackBuffer(UINT Subresource) {
+    if (m_readbackBuffers[Subresource] != nullptr)
+      return;
 
     DxvkBufferCreateInfo info;
     info.size   = GetMipSize(Subresource);
@@ -177,10 +188,7 @@ namespace dxvk {
                                   | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
                                   | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
 
-    m_buffers[Subresource] = m_device->GetDXVKDevice()->createBuffer(info, memType);
-    m_mappedSlices[Subresource] = m_buffers[Subresource]->getSliceHandle();
-
-    return true;
+    m_readbackBuffers[Subresource] = m_device->GetDXVKDevice()->createBuffer(info, memType);
   }
 
 
@@ -193,7 +201,7 @@ namespace dxvk {
 
     const VkExtent3D mipExtent = util::computeMipLevelExtent(
       GetExtent(), MipLevel);
-    
+
     const VkExtent3D blockCount = util::computeBlockCount(
       mipExtent, formatInfo->blockSize);
 

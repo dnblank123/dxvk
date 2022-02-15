@@ -818,7 +818,8 @@ namespace dxvk {
     if (dstTexInfo->Desc()->Pool == D3DPOOL_DEFAULT)
       return this->StretchRect(pRenderTarget, nullptr, pDestSurface, nullptr, D3DTEXF_NONE);
 
-    Rc<DxvkBuffer> dstBuffer = dstTexInfo->GetBuffer(dst->GetSubresource());
+    dstTexInfo->EnsureReadbackBuffer(dst->GetSubresource());
+    Rc<DxvkBuffer> dstBuffer = dstTexInfo->GetReadbackBuffer(dst->GetSubresource());
 
     Rc<DxvkImage>  srcImage                 = srcTexInfo->GetImage();
     const DxvkFormatInfo* srcFormatInfo     = imageFormatInfo(srcImage->info().format);
@@ -4073,9 +4074,8 @@ namespace dxvk {
 
     auto& desc = *(pResource->Desc());
 
-    bool alloced = pResource->CreateBufferSubresource(Subresource);
-
-    const Rc<DxvkBuffer> mappedBuffer = pResource->GetBuffer(Subresource);
+    bool alloced = pResource->EnsureLockingData(Subresource);
+    void* lockingData = pResource->GetLockingData(Subresource);
 
     auto& formatMapping = pResource->GetFormatMapping();
 
@@ -4088,9 +4088,7 @@ namespace dxvk {
     VkExtent3D levelExtent = pResource->GetExtentMip(MipLevel);
     VkExtent3D blockCount  = util::computeBlockCount(levelExtent, formatInfo->blockSize);
 
-    const bool systemmem = desc.Pool == D3DPOOL_SYSTEMMEM;
     const bool managed   = IsPoolManaged(desc.Pool);
-    const bool scratch   = desc.Pool == D3DPOOL_SCRATCH;
 
     bool fullResource = pBox == nullptr;
     if (unlikely(!fullResource)) {
@@ -4122,115 +4120,101 @@ namespace dxvk {
     const bool readOnly = Flags & D3DLOCK_READONLY;
     pResource->SetReadOnlyLocked(Subresource, readOnly);
 
-    bool renderable = desc.Usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL);
-
     // If we recently wrote to the texture on the gpu,
     // then we need to copy -> buffer
     // We are also always dirty if we are a render target,
     // a depth stencil, or auto generate mipmaps.
-    bool needsReadback = pResource->NeedsReachback(Subresource) || renderable;
+    bool needsReadback = pResource->NeedsReachback(Subresource);
+    auto readbackBuffer = pResource->GetReadbackBuffer(Subresource);
+    needsReadback |= readbackBuffer != nullptr; // if the readback buffer already exists, GetRenderTargetData or GetFrontBufferData was called.
+    bool renderable = desc.Usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL);
+    needsReadback |= renderable;
     pResource->SetNeedsReadback(Subresource, false);
 
-    DxvkBufferSliceHandle physSlice;
+    const bool discard = Flags & D3DLOCK_DISCARD;
+    if (alloced && !needsReadback && !discard) {
+      std::memset(lockingData, 0, pResource->GetMipSize(Subresource));
+    }
+    else if (needsReadback) {
+      if (unlikely(readbackBuffer == nullptr)) {
+        Rc<DxvkImage> resourceImage = pResource->GetImage();
 
-    if (Flags & D3DLOCK_DISCARD) {
-      // We do not have to preserve the contents of the
-      // buffer if the entire image gets discarded.
-      physSlice = pResource->DiscardMapSlice(Subresource);
+        Rc<DxvkImage> mappedImage = resourceImage->info().sampleCount != 1
+          ? pResource->GetResolveImage()
+          : std::move(resourceImage);
 
-      EmitCs([
-        cImageBuffer = std::move(mappedBuffer),
-        cBufferSlice = physSlice
-      ] (DxvkContext* ctx) {
-        ctx->invalidateBuffer(cImageBuffer, cBufferSlice);
-      });
-    } else {
-      physSlice = pResource->GetMappedSlice(Subresource);
+        // When using any map mode which requires the image contents
+        // to be preserved, and if the GPU has write access to the
+        // image, copy the current image contents into the buffer.
+        auto subresourceLayers = vk::makeSubresourceLayers(subresource);
 
-      // We do not need to wait for the resource in the event the
-      // calling app promises not to overwrite data that is in use
-      // or is reading. Remember! This will only trigger for MANAGED resources
-      // that cannot get affected by GPU, therefore readonly is A-OK for NOT waiting.
-      const bool skipWait = (scratch || managed || systemmem) && !needsReadback;
-
-      if (alloced && !needsReadback) {
-        std::memset(physSlice.mapPtr, 0, physSlice.length);
-      }
-      else if (!skipWait) {
-        if (unlikely(needsReadback)) {
-          Rc<DxvkImage> resourceImage = pResource->GetImage();
-
-          Rc<DxvkImage> mappedImage = resourceImage->info().sampleCount != 1
-            ? pResource->GetResolveImage()
-            : std::move(resourceImage);
-
-          // When using any map mode which requires the image contents
-          // to be preserved, and if the GPU has write access to the
-          // image, copy the current image contents into the buffer.
-          auto subresourceLayers = vk::makeSubresourceLayers(subresource);
-
-          // We need to resolve this, some games
-          // lock MSAA render targets even though
-          // that's entirely illegal and they explicitly
-          // tell us that they do NOT want to lock them...
-          if (resourceImage != nullptr) {
-            EmitCs([
-              cMainImage    = resourceImage,
-              cResolveImage = mappedImage,
-              cSubresource  = subresourceLayers
-            ] (DxvkContext* ctx) {
-              VkImageResolve region;
-              region.srcSubresource = cSubresource;
-              region.srcOffset      = VkOffset3D { 0, 0, 0 };
-              region.dstSubresource = cSubresource;
-              region.dstOffset      = VkOffset3D { 0, 0, 0 };
-              region.extent         = cMainImage->mipLevelExtent(cSubresource.mipLevel);
-
-              if (cSubresource.aspectMask != (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
-                ctx->resolveImage(
-                  cResolveImage, cMainImage, region,
-                  cMainImage->info().format);
-              }
-              else {
-                ctx->resolveDepthStencilImage(
-                  cResolveImage, cMainImage, region,
-                  VK_RESOLVE_MODE_SAMPLE_ZERO_BIT_KHR,
-                  VK_RESOLVE_MODE_SAMPLE_ZERO_BIT_KHR);
-              }
-            });
-          }
-
-          VkFormat packedFormat = GetPackedDepthStencilFormat(desc.Format);
-
+        // We need to resolve this, some games
+        // lock MSAA render targets even though
+        // that's entirely illegal and they explicitly
+        // tell us that they do NOT want to lock them...
+        if (resourceImage != nullptr) {
           EmitCs([
-            cImageBuffer  = mappedBuffer,
-            cImage        = std::move(mappedImage),
-            cSubresources = subresourceLayers,
-            cLevelExtent  = levelExtent,
-            cPackedFormat = packedFormat
+            cMainImage    = resourceImage,
+            cResolveImage = mappedImage,
+            cSubresource  = subresourceLayers
           ] (DxvkContext* ctx) {
-            if (cSubresources.aspectMask != (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
-              ctx->copyImageToBuffer(cImageBuffer, 0, 4, 0,
-                cImage, cSubresources, VkOffset3D { 0, 0, 0 },
-                cLevelExtent);
-            } else {
-              // Copying DS to a packed buffer is only supported for D24S8 and D32S8
-              // right now so the 4 byte row alignment is guaranteed by the format size
-              ctx->copyDepthStencilImageToPackedBuffer(
-                cImageBuffer, 0,
-                VkOffset2D { 0, 0 },
-                VkExtent2D { cLevelExtent.width, cLevelExtent.height },
-                cImage, cSubresources,
-                VkOffset2D { 0, 0 },
-                VkExtent2D { cLevelExtent.width, cLevelExtent.height },
-                cPackedFormat);
+            VkImageResolve region;
+            region.srcSubresource = cSubresource;
+            region.srcOffset      = VkOffset3D { 0, 0, 0 };
+            region.dstSubresource = cSubresource;
+            region.dstOffset      = VkOffset3D { 0, 0, 0 };
+            region.extent         = cMainImage->mipLevelExtent(cSubresource.mipLevel);
+
+            if (cSubresource.aspectMask != (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
+              ctx->resolveImage(
+                cResolveImage, cMainImage, region,
+                cMainImage->info().format);
+            }
+            else {
+              ctx->resolveDepthStencilImage(
+                cResolveImage, cMainImage, region,
+                VK_RESOLVE_MODE_SAMPLE_ZERO_BIT_KHR,
+                VK_RESOLVE_MODE_SAMPLE_ZERO_BIT_KHR);
             }
           });
         }
 
-        if (!WaitForResource(mappedBuffer, Flags))
-          return D3DERR_WASSTILLDRAWING;
+        VkFormat packedFormat = GetPackedDepthStencilFormat(desc.Format);
+
+        pResource->EnsureReadbackBuffer(Subresource);
+        readbackBuffer = pResource->GetReadbackBuffer(Subresource);
+
+        EmitCs([
+          cImageBuffer  = readbackBuffer,
+          cImage        = std::move(mappedImage),
+          cSubresources = subresourceLayers,
+          cLevelExtent  = levelExtent,
+          cPackedFormat = packedFormat
+        ] (DxvkContext* ctx) {
+          if (cSubresources.aspectMask != (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
+            ctx->copyImageToBuffer(cImageBuffer, 0, 4, 0,
+              cImage, cSubresources, VkOffset3D { 0, 0, 0 },
+              cLevelExtent);
+          } else {
+            // Copying DS to a packed buffer is only supported for D24S8 and D32S8
+            // right now so the 4 byte row alignment is guaranteed by the format size
+            ctx->copyDepthStencilImageToPackedBuffer(
+              cImageBuffer, 0,
+              VkOffset2D { 0, 0 },
+              VkExtent2D { cLevelExtent.width, cLevelExtent.height },
+              cImage, cSubresources,
+              VkOffset2D { 0, 0 },
+              VkExtent2D { cLevelExtent.width, cLevelExtent.height },
+              cPackedFormat);
+          }
+        });
       }
+
+      if (!WaitForResource(readbackBuffer, Flags))
+        return D3DERR_WASSTILLDRAWING;
+
+      std::memcpy(lockingData, readbackBuffer->mapPtr(0), readbackBuffer->info().size);
+      pResource->DestroyReadbackBuffer(Subresource);
     }
 
     const bool atiHack = desc.Format == D3D9Format::ATI1 || desc.Format == D3D9Format::ATI2;
@@ -4250,7 +4234,7 @@ namespace dxvk {
     pResource->SetLocked(Subresource, true);
 
     const bool noDirtyUpdate = Flags & D3DLOCK_NO_DIRTY_UPDATE;
-    if (likely((pResource->IsManaged() && m_d3d9Options.evictManagedOnUnlock)
+    if (likely((managed && m_d3d9Options.evictManagedOnUnlock)
       || ((desc.Pool == D3DPOOL_DEFAULT || !noDirtyUpdate) && !readOnly))) {
       if (pBox && MipLevel != 0) {
         D3DBOX scaledBox = *pBox;
@@ -4287,8 +4271,7 @@ namespace dxvk {
       (!atiHack) ? formatInfo : nullptr,
       pBox);
 
-
-    uint8_t* data = reinterpret_cast<uint8_t*>(physSlice.mapPtr);
+    uint8_t* data = reinterpret_cast<uint8_t*>(lockingData);
     data += offset;
     pLockedBox->pBits = data;
     return D3D_OK;
@@ -4329,7 +4312,7 @@ namespace dxvk {
          shouldToss &= !pResource->IsManaged() || m_d3d9Options.evictManagedOnUnlock;
 
     if (shouldToss) {
-      pResource->DestroyBufferSubresource(Subresource);
+      pResource->FreeLockingData(Subresource);
       pResource->SetNeedsReadback(Subresource, true);
     }
 
@@ -4374,7 +4357,7 @@ namespace dxvk {
 
     // Now that data has been written into the buffer,
     // we need to copy its contents into the image
-    const DxvkBufferSliceHandle srcSlice = pSrcTexture->GetMappedSlice(SrcSubresource);
+    const void* textureSrcData = pSrcTexture->GetLockingData(SrcSubresource);
 
     auto formatInfo  = imageFormatInfo(image->info().format);
     auto srcSubresource = pSrcTexture->GetSubresourceFromIndex(
@@ -4421,7 +4404,7 @@ namespace dxvk {
       VkDeviceSize dirtySize = extentBlockCount.width * extentBlockCount.height * extentBlockCount.depth * formatInfo->elementSize;
       D3D9BufferSlice slice = AllocTempBuffer<false>(dirtySize);
       copySrcSlice = slice.slice;
-      void* srcData = reinterpret_cast<uint8_t*>(srcSlice.mapPtr) + copySrcOffset;
+      const void* srcData = reinterpret_cast<const uint8_t*>(textureSrcData) + copySrcOffset;
       util::packImageData(
         slice.mapPtr, srcData, extentBlockCount, formatInfo->elementSize,
         pitch, pitch * srcTexLevelExtentBlockCount.height);
@@ -4459,11 +4442,11 @@ namespace dxvk {
       }
 
       // the converter can not handle the 4 aligned pitch so we always repack into a staging buffer
-      D3D9BufferSlice slice = AllocTempBuffer<false>(srcSlice.length);
+      D3D9BufferSlice slice = AllocTempBuffer<false>(pSrcTexture->GetMipSize(SrcSubresource));
       VkDeviceSize pitch = align(srcTexLevelExtentBlockCount.width * formatInfo->elementSize, 4);
 
       util::packImageData(
-        slice.mapPtr, srcSlice.mapPtr, srcTexLevelExtentBlockCount, formatInfo->elementSize,
+        slice.mapPtr, textureSrcData, srcTexLevelExtentBlockCount, formatInfo->elementSize,
         pitch, std::min(convertFormat.PlaneCount, 2u) * pitch * srcTexLevelExtentBlockCount.height);
 
       Flush();
@@ -5253,7 +5236,7 @@ namespace dxvk {
 
   void D3D9DeviceEx::UploadManagedTexture(D3D9CommonTexture* pResource) {
     for (uint32_t subresource = 0; subresource < pResource->CountSubresources(); subresource++) {
-      if (!pResource->NeedsUpload(subresource) || pResource->GetBuffer(subresource) == nullptr)
+      if (!pResource->NeedsUpload(subresource) || pResource->GetLockingData(subresource) == nullptr)
         continue;
 
       this->FlushImage(pResource, subresource);

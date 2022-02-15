@@ -50,10 +50,6 @@ namespace dxvk {
     void InitDeviceLocalTexture(
             D3D9CommonTexture* pTexture);
 
-    void InitHostVisibleTexture(
-            D3D9CommonTexture* pTexture,
-            void*              pInitialData);
-    
     void FlushImplicit();
     void FlushInternal();
 
