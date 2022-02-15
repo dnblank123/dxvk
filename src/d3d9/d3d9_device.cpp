@@ -4151,9 +4151,7 @@ namespace dxvk {
       // calling app promises not to overwrite data that is in use
       // or is reading. Remember! This will only trigger for MANAGED resources
       // that cannot get affected by GPU, therefore readonly is A-OK for NOT waiting.
-      const bool usesStagingBuffer = pResource->DoesStagingBufferUploads(Subresource);
-      const bool skipWait = (scratch || managed || systemmem) && !needsReadback
-        && (usesStagingBuffer || readOnly);
+      const bool skipWait = (scratch || managed || systemmem) && !needsReadback;
 
       if (alloced && !needsReadback) {
         std::memset(physSlice.mapPtr, 0, physSlice.length);
@@ -4228,8 +4226,6 @@ namespace dxvk {
                 cPackedFormat);
             }
           });
-        } else if (!(Flags & D3DLOCK_DONOTWAIT) && !WaitForResource(mappedBuffer, D3DLOCK_DONOTWAIT)) {
-          pResource->EnableStagingBufferUploads(Subresource);
         }
 
         if (!WaitForResource(mappedBuffer, Flags))
@@ -4421,34 +4417,27 @@ namespace dxvk {
           + srcOffsetBlockCount.y * pitch
           + srcOffsetBlockCount.x * formatInfo->elementSize;
 
-      VkDeviceSize rowAlignment = 1;
       DxvkBufferSlice copySrcSlice;
-      if (pSrcTexture->DoesStagingBufferUploads(SrcSubresource)) {
-        VkDeviceSize dirtySize = extentBlockCount.width * extentBlockCount.height * extentBlockCount.depth * formatInfo->elementSize;
-        D3D9BufferSlice slice = AllocTempBuffer<false>(dirtySize);
-        copySrcSlice = slice.slice;
-        void* srcData = reinterpret_cast<uint8_t*>(srcSlice.mapPtr) + copySrcOffset;
-        util::packImageData(
-          slice.mapPtr, srcData, extentBlockCount, formatInfo->elementSize,
-          pitch, pitch * srcTexLevelExtentBlockCount.height);
-      } else {
-        copySrcSlice = DxvkBufferSlice(pSrcTexture->GetBuffer(SrcSubresource), copySrcOffset, srcSlice.length);
-        rowAlignment = pitch; // row alignment can act as the pitch parameter
-      }
+      VkDeviceSize dirtySize = extentBlockCount.width * extentBlockCount.height * extentBlockCount.depth * formatInfo->elementSize;
+      D3D9BufferSlice slice = AllocTempBuffer<false>(dirtySize);
+      copySrcSlice = slice.slice;
+      void* srcData = reinterpret_cast<uint8_t*>(srcSlice.mapPtr) + copySrcOffset;
+      util::packImageData(
+        slice.mapPtr, srcData, extentBlockCount, formatInfo->elementSize,
+        pitch, pitch * srcTexLevelExtentBlockCount.height);
 
       EmitCs([
         cSrcSlice       = std::move(copySrcSlice),
         cDstImage       = image,
         cDstLayers      = dstLayers,
         cDstLevelExtent = alignedExtent,
-        cOffset         = alignedDestOffset,
-        cRowAlignment   = rowAlignment
+        cOffset         = alignedDestOffset
       ] (DxvkContext* ctx) {
         ctx->copyBufferToImage(
           cDstImage,  cDstLayers,
           cOffset, cDstLevelExtent,
           cSrcSlice.buffer(), cSrcSlice.offset(),
-          cRowAlignment, 0);
+          1, 0);
       });
     }
     else {
@@ -4583,13 +4572,9 @@ namespace dxvk {
       const bool readOnly = Flags & D3DLOCK_READONLY;
       const bool noOverlap = !pResource->GPUReadingRange().Overlaps(lockRange);
       const bool noOverwrite = Flags & D3DLOCK_NOOVERWRITE;
-      const bool usesStagingBuffer = pResource->DoesStagingBufferUploads();
       const bool directMapping = pResource->GetMapMode() == D3D9_COMMON_BUFFER_MAP_MODE_DIRECT;
-      const bool skipWait = (!needsReadback && (usesStagingBuffer || readOnly || (noOverlap && !directMapping))) || noOverwrite;
+      const bool skipWait = (!needsReadback && (directMapping || readOnly || noOverlap)) || noOverwrite;
       if (!skipWait) {
-        if (!(Flags & D3DLOCK_DONOTWAIT) && !WaitForResource(mappingBuffer, D3DLOCK_DONOTWAIT))
-          pResource->EnableStagingBufferUploads();
-
         if (!WaitForResource(mappingBuffer, Flags))
           return D3DERR_WASSTILLDRAWING;
 
@@ -4625,15 +4610,10 @@ namespace dxvk {
 
     D3D9Range& range = pResource->DirtyRange();
 
-    DxvkBufferSlice copySrcSlice;
-    if (pResource->DoesStagingBufferUploads()) {
-      D3D9BufferSlice slice = AllocTempBuffer<false>(range.max - range.min);
-      copySrcSlice = slice.slice;
-      void* srcData = reinterpret_cast<uint8_t*>(srcSlice.mapPtr) + range.min;
-      memcpy(slice.mapPtr, srcData, range.max - range.min);
-    } else {
-      copySrcSlice = DxvkBufferSlice(pResource->GetBuffer<D3D9_COMMON_BUFFER_TYPE_MAPPING>(), range.min, range.max - range.min);
-    }
+    D3D9BufferSlice slice = AllocTempBuffer<false>(range.max - range.min);
+    DxvkBufferSlice copySrcSlice = slice.slice;
+    void* srcData = reinterpret_cast<uint8_t*>(srcSlice.mapPtr) + range.min;
+    memcpy(slice.mapPtr, srcData, range.max - range.min);
 
     EmitCs([
       cDstSlice  = dstBuffer,

@@ -176,15 +176,6 @@ namespace dxvk {
      */
     inline bool NeedsUpload() { return m_desc.Pool != D3DPOOL_DEFAULT && !m_dirtyRange.IsDegenerate(); }
 
-    inline bool DoesStagingBufferUploads() const { return m_uploadUsingStaging; }
-
-    inline void EnableStagingBufferUploads() {
-      if (GetMapMode() != D3D9_COMMON_BUFFER_MAP_MODE_BUFFER)
-        return;
-
-      m_uploadUsingStaging = true;
-    }
-
     void PreLoad();
 
   private:
@@ -208,7 +199,6 @@ namespace dxvk {
     const D3D9_BUFFER_DESC      m_desc;
     DWORD                       m_mapFlags;
     bool                        m_needsReadback = false;
-    bool                        m_uploadUsingStaging = false;
 
     Rc<DxvkBuffer>              m_buffer;
     Rc<DxvkBuffer>              m_stagingBuffer;
