@@ -159,10 +159,14 @@ namespace dxvk {
 
 
   bool D3D9CommonTexture::EnsureLockingData(UINT Subresource) {
-    if (m_lockingData[Subresource] != nullptr)
+    D3D9Memory& memory = m_lockingData[Subresource];
+    if (memory) {
+      memory.Map();
       return false;
+    }
 
-    m_lockingData[Subresource] = malloc(GetMipSize(Subresource));
+    memory = m_device->GetAllocator()->Alloc(GetMipSize(Subresource));
+    memory.Map();
     return true;
   }
 

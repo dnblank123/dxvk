@@ -3,6 +3,7 @@
 #include "d3d9_format.h"
 #include "d3d9_util.h"
 #include "d3d9_caps.h"
+#include "d3d9_mem.h"
 
 #include "../dxvk/dxvk_device.h"
 
@@ -141,8 +142,12 @@ namespace dxvk {
       return m_resolveImage;
     }
 
-    void* GetLockingData(UINT Subresource) const {
-      return m_lockingData[Subresource];
+    void* GetLockingData(UINT Subresource) {
+      D3D9Memory& memory = m_lockingData[Subresource];
+      if (!memory)
+        return nullptr;
+
+      return memory.Ptr();
     }
 
     const Rc<DxvkBuffer>& GetReadbackBuffer(UINT Subresource) {
@@ -228,13 +233,16 @@ namespace dxvk {
      */
     bool EnsureLockingData(UINT Subresource);
 
+    void UnmapLockingData(UINT Subresource) {
+      m_lockingData[Subresource].Unmap();
+    }
+
     /**
      * \brief Destroys a buffer
      * Destroys mapping and staging buffers for a given subresource
      */
     void FreeLockingData(UINT Subresource) {
-      free(m_lockingData[Subresource]);
-      m_lockingData[Subresource] = nullptr;
+      m_lockingData[Subresource] = {};
       SetNeedsReadback(Subresource, true);
     }
 
@@ -445,9 +453,9 @@ namespace dxvk {
     Rc<DxvkImage>                 m_image;
     Rc<DxvkImage>                 m_resolveImage;
     D3D9SubresourceArray<
-      Rc<DxvkBuffer>>              m_readbackBuffers;
+      Rc<DxvkBuffer>>             m_readbackBuffers;
     D3D9SubresourceArray<
-      void*>                      m_lockingData = {};
+      D3D9Memory>                 m_lockingData = {};
 
     D3D9_VK_FORMAT_MAPPING        m_mapping;
 

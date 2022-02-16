@@ -38,18 +38,19 @@ namespace dxvk {
           HWND                   hFocusWindow,
           DWORD                  BehaviorFlags,
           Rc<DxvkDevice>         dxvkDevice)
-    : m_parent         ( pParent )
-    , m_deviceType     ( DeviceType )
-    , m_window         ( hFocusWindow )
-    , m_behaviorFlags  ( BehaviorFlags )
-    , m_adapter        ( pAdapter )
-    , m_dxvkDevice     ( dxvkDevice )
-    , m_shaderModules  ( new D3D9ShaderModuleSet )
-    , m_d3d9Options    ( dxvkDevice, pParent->GetInstance()->config() )
-    , m_multithread    ( BehaviorFlags & D3DCREATE_MULTITHREADED )
-    , m_isSWVP         ( (BehaviorFlags & D3DCREATE_SOFTWARE_VERTEXPROCESSING) ? true : false )
-    , m_csThread       ( dxvkDevice, dxvkDevice->createContext() )
-    , m_csChunk        ( AllocCsChunk() ) {
+    : m_parent          ( pParent )
+    , m_deviceType      ( DeviceType )
+    , m_window          ( hFocusWindow )
+    , m_behaviorFlags   ( BehaviorFlags )
+    , m_adapter         ( pAdapter )
+    , m_dxvkDevice      ( dxvkDevice )
+    , m_memoryAllocator ( )
+    , m_shaderModules   ( new D3D9ShaderModuleSet )
+    , m_d3d9Options     ( dxvkDevice, pParent->GetInstance()->config() )
+    , m_multithread     ( BehaviorFlags & D3DCREATE_MULTITHREADED )
+    , m_isSWVP          ( (BehaviorFlags & D3DCREATE_SOFTWARE_VERTEXPROCESSING) ? true : false )
+    , m_csThread        ( dxvkDevice, dxvkDevice->createContext() )
+    , m_csChunk         ( AllocCsChunk() ) {
     // If we can SWVP, then we use an extended constant set
     // as SWVP has many more slots available than HWVP.
     bool canSWVP = CanSWVP();
@@ -715,7 +716,6 @@ namespace dxvk {
     }
 
     UpdateTextureFromBuffer(dstTextureInfo, srcTextureInfo, dst->GetSubresource(), src->GetSubresource(), srcOffset, extent, dstOffset);
-
     dstTextureInfo->SetNeedsReadback(dst->GetSubresource(), true);
 
     if (dstTextureInfo->IsAutomaticMip())
@@ -4314,6 +4314,8 @@ namespace dxvk {
     if (shouldToss) {
       pResource->FreeLockingData(Subresource);
       pResource->SetNeedsReadback(Subresource, true);
+    } else {
+      pResource->UnmapLockingData(Subresource);
     }
 
     return D3D_OK;
@@ -4357,7 +4359,8 @@ namespace dxvk {
 
     // Now that data has been written into the buffer,
     // we need to copy its contents into the image
-    const void* textureSrcData = pSrcTexture->GetLockingData(SrcSubresource);
+    pSrcTexture->EnsureLockingData(SrcSubresource);
+    auto textureSrcData = pSrcTexture->GetLockingData(SrcSubresource);
 
     auto formatInfo  = imageFormatInfo(image->info().format);
     auto srcSubresource = pSrcTexture->GetSubresourceFromIndex(
@@ -4438,6 +4441,7 @@ namespace dxvk {
 
       if (unlikely(srcTexLevelExtent != dstTexLevelExtent)) {
         Logger::err("Different extents are not supported with the texture converter.");
+        pSrcTexture->UnmapLockingData(SrcSubresource);
         return;
       }
 
@@ -4457,6 +4461,8 @@ namespace dxvk {
         image, dstLayers,
         slice.slice);
     }
+
+    pSrcTexture->UnmapLockingData(SrcSubresource);
   }
 
   void D3D9DeviceEx::EmitGenerateMips(
@@ -5236,7 +5242,7 @@ namespace dxvk {
 
   void D3D9DeviceEx::UploadManagedTexture(D3D9CommonTexture* pResource) {
     for (uint32_t subresource = 0; subresource < pResource->CountSubresources(); subresource++) {
-      if (!pResource->NeedsUpload(subresource) || pResource->GetLockingData(subresource) == nullptr)
+      if (!pResource->NeedsUpload(subresource))
         continue;
 
       this->FlushImage(pResource, subresource);
