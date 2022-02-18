@@ -75,6 +75,8 @@ namespace dxvk {
   D3D9CommonTexture::~D3D9CommonTexture() {
     if (m_size != 0)
       m_device->ChangeReportedMemory(m_size);
+
+    m_device->RemoveManagedTexture(this);
   }
 
 
@@ -498,7 +500,7 @@ namespace dxvk {
       return;
 
     auto lock = m_device->LockDevice();
-    m_device->UploadManagedTexture(this);
+    m_device->UploadManagedTexture(this, true);
     m_device->MarkTextureUploaded(this);
   }
 

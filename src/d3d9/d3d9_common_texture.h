@@ -239,7 +239,7 @@ namespace dxvk {
      */
     void DestroyBufferSubresource(UINT Subresource) {
       m_buffers[Subresource] = nullptr;
-      SetWrittenByGPU(Subresource, true);
+      SetNeedsReadback(Subresource, true);
     }
 
     bool IsDynamic() const {
@@ -326,11 +326,11 @@ namespace dxvk {
 
     bool IsAnySubresourceLocked() const { return m_locked.any(); }
 
-    void SetWrittenByGPU(UINT Subresource, bool value) { m_wasWrittenByGPU.set(Subresource, value); }
+    void SetNeedsReadback(UINT Subresource, bool value) { m_needsReadback.set(Subresource, value); }
 
-    bool WasWrittenByGPU(UINT Subresource) const { return m_wasWrittenByGPU.get(Subresource); }
+    bool NeedsReachback(UINT Subresource) const { return m_needsReadback.get(Subresource); }
 
-    void MarkAllWrittenByGPU() { m_wasWrittenByGPU.setAll(); }
+    void MarkAllNeedReadback() { m_needsReadback.setAll(); }
 
     void SetReadOnlyLocked(UINT Subresource, bool readOnly) { return m_readOnly.set(Subresource, readOnly); }
 
@@ -378,6 +378,8 @@ namespace dxvk {
     bool NeedsAnyUpload() { return m_needsUpload.any(); }
     void ClearNeedsUpload() { return m_needsUpload.clearAll();  }
     bool DoesStagingBufferUploads(UINT Subresource) const { return m_uploadUsingStaging.get(Subresource); }
+
+    inline bool AnySubresourceDoesStagingBufferUpload() const { return m_uploadUsingStaging.any(); }
 
     void EnableStagingBufferUploads(UINT Subresource) {
       m_uploadUsingStaging.set(Subresource, true);
@@ -435,6 +437,15 @@ namespace dxvk {
     static VkImageType GetImageTypeFromResourceType(
             D3DRESOURCETYPE  Dimension);
 
+    inline bool DoesRetainManagedMappingBuffer() {
+      return m_managedReadbackCount > 16;
+    }
+
+    inline void NotifyReadback() {
+      m_managedReadbackCount++;
+    }
+
+
   private:
 
     D3D9DeviceEx*                 m_device;
@@ -466,7 +477,7 @@ namespace dxvk {
 
     D3D9SubresourceBitset         m_readOnly = { };
 
-    D3D9SubresourceBitset         m_wasWrittenByGPU = { };
+    D3D9SubresourceBitset         m_needsReadback = { };
 
     D3D9SubresourceBitset         m_needsUpload = { };
 
@@ -479,6 +490,8 @@ namespace dxvk {
     D3DTEXTUREFILTERTYPE          m_mipFilter = D3DTEXF_LINEAR;
 
     std::array<D3DBOX, 6>         m_dirtyBoxes;
+
+    uint32_t                      m_managedReadbackCount = 0;
 
     /**
      * \brief Mip level
