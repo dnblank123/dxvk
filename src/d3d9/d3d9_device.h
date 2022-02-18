@@ -87,11 +87,6 @@ namespace dxvk {
     void*           mapPtr = nullptr;
   };
 
-  struct D3D9ManagedTexture {
-    D3D9CommonTexture *pResource;
-    uint64_t           lastUpload;
-  };
-
   class D3D9DeviceEx final : public ComObjectClamp<IDirect3DDevice9Ex> {
     constexpr static uint32_t DefaultFrameLatency = 3;
     constexpr static uint32_t MaxFrameLatency     = 20;
@@ -719,8 +714,7 @@ namespace dxvk {
             DWORD                   Flags);
 
     HRESULT FlushBuffer(
-            D3D9CommonBuffer*       pResource,
-            bool                    TrackResource);
+            D3D9CommonBuffer*       pResource);
 
     HRESULT UnlockBuffer(
             D3D9CommonBuffer*       pResource);
@@ -753,7 +747,7 @@ namespace dxvk {
 
     void MarkRenderHazards();
 
-    void UploadManagedTexture(D3D9CommonTexture* pResource, bool trackManaged);
+    void UploadManagedTexture(D3D9CommonTexture* pResource);
 
     void UploadManagedTextures(uint32_t mask);
 
@@ -921,16 +915,6 @@ namespace dxvk {
     UINT GetSamplerCount() const {
       return m_samplerCount.load();
     }
-
-    void BumpFrame() {
-      m_frameCounter++;
-      m_managedCleanupThresholdBumpedInFrame = false;
-      ClearUnusedManagedResources();
-    }
-
-    void TrackManagedTexture(D3D9CommonTexture* pResource);
-    void RemoveManagedTexture(D3D9CommonTexture* pResource);
-    void RemoveManagedBuffer(D3D9CommonBuffer* pResource);
 
   private:
 
@@ -1136,9 +1120,6 @@ namespace dxvk {
 
     void UpdateSamplerDepthModeSpecConstant(uint32_t value);
 
-    void TrackManagedBuffer(D3D9CommonBuffer* pResource);
-    void ClearUnusedManagedResources();
-
     Com<D3D9InterfaceEx>            m_parent;
     D3DDEVTYPE                      m_deviceType;
     HWND                            m_window;
@@ -1267,13 +1248,6 @@ namespace dxvk {
     std::atomic<int32_t>            m_samplerCount    = { 0 };
 
     Direct3DState9                  m_state;
-
-    uint32_t                        m_managedCleanupThreshold = 16;
-    bool                            m_managedCleanupThresholdBumpedInFrame = false;
-
-    uint64_t                                         m_frameCounter = 0;
-    std::unordered_map<D3D9CommonTexture*, uint64_t> m_managedTextures;
-    std::unordered_map<D3D9CommonBuffer*, uint64_t>  m_managedBuffers;
 
   };
 

@@ -87,7 +87,6 @@ namespace dxvk {
     // and purely rely on AddDirtyRect to notify D3D9 that contents have changed.
     // We have no way of knowing which mip levels were actually changed.
     m_texture.SetAllNeedUpload();
-    m_texture.Device()->TrackManagedTexture(&m_texture);
     return D3D_OK;
   }
 
@@ -170,7 +169,6 @@ namespace dxvk {
     // and purely rely on AddDirtyBox to notify D3D9 that contents have changed.
     // We have no way of knowing which mip levels were actually changed.
     m_texture.SetAllNeedUpload();
-    m_texture.Device()->TrackManagedTexture(&m_texture);
     return D3D_OK;
   }
 
@@ -261,7 +259,6 @@ namespace dxvk {
     for (uint32_t m = 0; m < m_texture.Desc()->MipLevels; m++) {
       m_texture.SetNeedsUpload(m_texture.CalcSubresource(Face, m), true);
     }
-    m_texture.Device()->TrackManagedTexture(&m_texture);
     return D3D_OK;
   }
 

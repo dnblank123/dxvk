@@ -752,7 +752,7 @@ namespace dxvk {
         cSrcSlice.buffer(), cSrcSlice.offset(), 0, 0);
     });
 
-    dstTextureInfo->SetNeedsReadback(dst->GetSubresource(), true);
+    dstTextureInfo->SetWrittenByGPU(dst->GetSubresource(), true);
 
     if (dstTextureInfo->IsAutomaticMip())
       MarkTextureMipsDirty(dstTextureInfo);
@@ -844,7 +844,7 @@ namespace dxvk {
             cSrcSlice.buffer(), cSrcSlice.offset(), 0, 0);
         });
 
-        dstTexInfo->SetNeedsReadback(dstTexInfo->CalcSubresource(a, m), true);
+        dstTexInfo->SetWrittenByGPU(dstTexInfo->CalcSubresource(a, m), true);
       }
     }
 
@@ -912,7 +912,7 @@ namespace dxvk {
         cLevelExtent);
     });
 
-    dstTexInfo->SetNeedsReadback(dst->GetSubresource(), true);
+    dstTexInfo->SetWrittenByGPU(dst->GetSubresource(), true);
 
     return D3D_OK;
   }
@@ -1125,7 +1125,7 @@ namespace dxvk {
       });
     }
 
-    dstTextureInfo->SetNeedsReadback(dst->GetSubresource(), true);
+    dstTextureInfo->SetWrittenByGPU(dst->GetSubresource(), true);
 
     if (dstTextureInfo->IsAutomaticMip())
       MarkTextureMipsDirty(dstTextureInfo);
@@ -1203,7 +1203,7 @@ namespace dxvk {
       });
     }
 
-    dstTextureInfo->SetNeedsReadback(dst->GetSubresource(), true);
+    dstTextureInfo->SetWrittenByGPU(dst->GetSubresource(), true);
 
     if (dstTextureInfo->IsAutomaticMip())
       MarkTextureMipsDirty(dstTextureInfo);
@@ -1297,7 +1297,7 @@ namespace dxvk {
       if (texInfo->IsAutomaticMip())
         texInfo->SetNeedsMipGen(true);
 
-      texInfo->SetNeedsReadback(rt->GetSubresource(), true);
+      texInfo->SetWrittenByGPU(rt->GetSubresource(), true);
     }
 
     if (originalAlphaSwizzleRTs != m_alphaSwizzleRTs)
@@ -2680,7 +2680,7 @@ namespace dxvk {
       });
     }
 
-    dst->SetNeedsReadback(true);
+    dst->SetWrittenByGPU(true);
 
     return D3D_OK;
   }
@@ -4137,7 +4137,6 @@ namespace dxvk {
     auto& desc = *(pResource->Desc());
 
     bool alloced = pResource->CreateBufferSubresource(Subresource);
-    TrackManagedTexture(pResource);
 
     const Rc<DxvkBuffer> mappedBuffer = pResource->GetBuffer(Subresource);
 
@@ -4192,8 +4191,8 @@ namespace dxvk {
     // then we need to copy -> buffer
     // We are also always dirty if we are a render target,
     // a depth stencil, or auto generate mipmaps.
-    bool needsReadback = pResource->NeedsReachback(Subresource) || renderable;
-    pResource->SetNeedsReadback(Subresource, false);
+    bool wasWrittenByGPU = pResource->WasWrittenByGPU(Subresource) || renderable;
+    pResource->SetWrittenByGPU(Subresource, false);
 
     DxvkBufferSliceHandle physSlice;
 
@@ -4208,7 +4207,12 @@ namespace dxvk {
       ] (DxvkContext* ctx) {
         ctx->invalidateBuffer(cImageBuffer, cBufferSlice);
       });
-    } else {
+    }
+    else if ((managed && !m_d3d9Options.evictManagedOnUnlock) || scratch || systemmem) {
+      // Managed and scratch resources
+      // are meant to be able to provide readback without waiting.
+      // We always keep a copy of them in system memory for this reason.
+      // No need to wait as its not in use.
       physSlice = pResource->GetMappedSlice(Subresource);
 
       // We do not need to wait for the resource in the event the
@@ -4216,21 +4220,25 @@ namespace dxvk {
       // or is reading. Remember! This will only trigger for MANAGED resources
       // that cannot get affected by GPU, therefore readonly is A-OK for NOT waiting.
       const bool usesStagingBuffer = pResource->DoesStagingBufferUploads(Subresource);
-      const bool skipWait = (scratch || managed || systemmem) && !needsReadback
+      const bool skipWait = (scratch || managed || (systemmem && !wasWrittenByGPU))
         && (usesStagingBuffer || readOnly);
 
-      if (alloced && !needsReadback) {
+      if (alloced) {
         std::memset(physSlice.mapPtr, 0, physSlice.length);
       }
       else if (!skipWait) {
-        if (unlikely(needsReadback)) {
-          pResource->NotifyReadback();
-          if (!m_managedCleanupThresholdBumpedInFrame) {
-            Logger::warn(str::format("Bumped threshold to: ", m_managedCleanupThreshold));
-            m_managedCleanupThreshold += 256;
-            m_managedCleanupThresholdBumpedInFrame = true;
-          }
+        if (!(Flags & D3DLOCK_DONOTWAIT) && !WaitForResource(mappedBuffer, D3DLOCK_DONOTWAIT))
+          pResource->EnableStagingBufferUploads(Subresource);
 
+        if (!WaitForResource(mappedBuffer, Flags))
+          return D3DERR_WASSTILLDRAWING;
+      }
+    }
+    else {
+      physSlice = pResource->GetMappedSlice(Subresource);
+
+      if (!alloced || wasWrittenByGPU) {
+        if (unlikely(wasWrittenByGPU)) {
           Rc<DxvkImage> resourceImage = pResource->GetImage();
 
           Rc<DxvkImage> mappedImage = resourceImage->info().sampleCount != 1
@@ -4299,12 +4307,16 @@ namespace dxvk {
                 cPackedFormat);
             }
           });
-        } else if (!(Flags & D3DLOCK_DONOTWAIT) && !WaitForResource(mappedBuffer, D3DLOCK_DONOTWAIT)) {
-          pResource->EnableStagingBufferUploads(Subresource);
         }
 
         if (!WaitForResource(mappedBuffer, Flags))
           return D3DERR_WASSTILLDRAWING;
+      } else {
+        // If we are a new alloc, and we weren't written by the GPU
+        // that means that we are a newly initialized
+        // texture, and hence can just memset -> 0 and
+        // avoid a wait here.
+        std::memset(physSlice.mapPtr, 0, physSlice.length);
       }
     }
 
@@ -4325,7 +4337,8 @@ namespace dxvk {
     pResource->SetLocked(Subresource, true);
 
     const bool noDirtyUpdate = Flags & D3DLOCK_NO_DIRTY_UPDATE;
-    if (likely((desc.Pool == D3DPOOL_DEFAULT || !noDirtyUpdate) && !readOnly)) {
+    if (likely((pResource->IsManaged() && m_d3d9Options.evictManagedOnUnlock)
+      || ((desc.Pool == D3DPOOL_DEFAULT || !noDirtyUpdate) && !readOnly))) {
       if (pBox && MipLevel != 0) {
         D3DBOX scaledBox = *pBox;
         scaledBox.Left   <<= MipLevel;
@@ -4340,7 +4353,7 @@ namespace dxvk {
       }
     }
 
-    if (managed && !readOnly) {
+    if (managed && !m_d3d9Options.evictManagedOnUnlock && !readOnly) {
       pResource->SetNeedsUpload(Subresource, true);
 
       for (uint32_t i : bit::BitMask(m_activeTextures)) {
@@ -4388,7 +4401,7 @@ namespace dxvk {
     const D3DBOX& box = pResource->GetDirtyBox(Face);
     bool shouldFlush  = pResource->GetMapMode() == D3D9_COMMON_TEXTURE_MAP_MODE_BACKED;
          shouldFlush &= box.Left < box.Right && box.Top < box.Bottom && box.Front < box.Back;
-         shouldFlush &= !pResource->IsManaged();
+         shouldFlush &= !pResource->IsManaged() || m_d3d9Options.evictManagedOnUnlock;
 
     if (shouldFlush) {
         this->FlushImage(pResource, Subresource);
@@ -4400,11 +4413,11 @@ namespace dxvk {
     // and we aren't managed (for sysmem copy.)
     bool shouldToss  = pResource->GetMapMode() == D3D9_COMMON_TEXTURE_MAP_MODE_BACKED;
          shouldToss &= !pResource->IsDynamic();
-         shouldToss &= !pResource->IsManaged();
+         shouldToss &= !pResource->IsManaged() || m_d3d9Options.evictManagedOnUnlock;
 
     if (shouldToss) {
       pResource->DestroyBufferSubresource(Subresource);
-      pResource->SetNeedsReadback(Subresource, true);
+      pResource->SetWrittenByGPU(Subresource, true);
     }
 
     return D3D_OK;
@@ -4526,7 +4539,7 @@ namespace dxvk {
   void D3D9DeviceEx::EmitGenerateMips(
     D3D9CommonTexture* pResource) {
     if (pResource->IsManaged())
-      UploadManagedTexture(pResource, true);
+      UploadManagedTexture(pResource);
 
     EmitCs([
       cImageView = pResource->GetSampleView(false),
@@ -4568,10 +4581,6 @@ namespace dxvk {
     if (desc.Usage & D3DUSAGE_DYNAMIC)
       Flags &= ~D3DLOCK_DONOTWAIT;
 
-
-    bool alloced = pResource->EnsureStagingBuffer();
-    TrackManagedBuffer(pResource);
-
     // We only bounds check for MANAGED.
     // (TODO: Apparently this is meant to happen for DYNAMIC too but I am not sure
     //  how that works given it is meant to be a DIRECT access..?)
@@ -4604,7 +4613,7 @@ namespace dxvk {
         ctx->invalidateBuffer(cBuffer, cBufferSlice);
       });
 
-      pResource->SetNeedsReadback(false);
+      pResource->SetWrittenByGPU(false);
       pResource->GPUReadingRange().Clear();
     }
     else {
@@ -4619,38 +4628,21 @@ namespace dxvk {
 
       // If we are respecting the bounds ie. (MANAGED) we can test overlap
       // of our bounds, otherwise we just ignore this and go for it all the time.
-      const bool needsReadback = pResource->NeedsReadback();
+      const bool wasWrittenByGPU = pResource->WasWrittenByGPU();
       const bool readOnly = Flags & D3DLOCK_READONLY;
       const bool noOverlap = !pResource->GPUReadingRange().Overlaps(lockRange);
       const bool noOverwrite = Flags & D3DLOCK_NOOVERWRITE;
       const bool usesStagingBuffer = pResource->DoesStagingBufferUploads();
       const bool directMapping = pResource->GetMapMode() == D3D9_COMMON_BUFFER_MAP_MODE_DIRECT;
-      const bool skipWait = (!needsReadback && (usesStagingBuffer || readOnly || (noOverlap && !directMapping))) || noOverwrite;
-      if (alloced && !needsReadback) {
-        std::memset(physSlice.mapPtr, 0, physSlice.length);
-      }
-      else if (!skipWait) {
-        if (unlikely(needsReadback)) {
-          pResource->NotifyReadback();
-          if (!m_managedCleanupThresholdBumpedInFrame) {
-            m_managedCleanupThreshold += 256;
-            m_managedCleanupThresholdBumpedInFrame = true;
-          }
-
-          EmitCs([
-            cMappingBuffer = mappingBuffer,
-            cBuffer = pResource->GetBuffer<D3D9_COMMON_BUFFER_TYPE_REAL>()
-          ] (DxvkContext* ctx) {
-            ctx->copyBuffer(cMappingBuffer, 0, cBuffer, 0, cBuffer->info().size);
-          });
-        } else if (!(Flags & D3DLOCK_DONOTWAIT) && !WaitForResource(mappingBuffer, D3DLOCK_DONOTWAIT)) {
+      const bool skipWait = (!wasWrittenByGPU && (usesStagingBuffer || readOnly || (noOverlap && !directMapping))) || noOverwrite;
+      if (!skipWait) {
+        if (!(Flags & D3DLOCK_DONOTWAIT) && !WaitForResource(mappingBuffer, D3DLOCK_DONOTWAIT))
           pResource->EnableStagingBufferUploads();
-        }
 
         if (!WaitForResource(mappingBuffer, Flags))
           return D3DERR_WASSTILLDRAWING;
 
-        pResource->SetNeedsReadback(false);
+        pResource->SetWrittenByGPU(false);
         pResource->GPUReadingRange().Clear();
       }
     }
@@ -4676,8 +4668,7 @@ namespace dxvk {
 
 
   HRESULT D3D9DeviceEx::FlushBuffer(
-        D3D9CommonBuffer*       pResource,
-        bool                    TrackResource) {
+        D3D9CommonBuffer*       pResource) {
     auto dstBuffer = pResource->GetBufferSlice<D3D9_COMMON_BUFFER_TYPE_REAL>();
     auto srcSlice = pResource->GetMappedSlice();
 
@@ -4710,9 +4701,6 @@ namespace dxvk {
     pResource->GPUReadingRange().Conjoin(pResource->DirtyRange());
     pResource->DirtyRange().Clear();
 
-    if (TrackResource)
-      TrackManagedBuffer(pResource);
-
 	  return D3D_OK;
   }
 
@@ -4737,7 +4725,7 @@ namespace dxvk {
 
     FlushImplicit(FALSE);
 
-    FlushBuffer(pResource, true);
+    FlushBuffer(pResource);
 
     return D3D_OK;
   }
@@ -5332,7 +5320,7 @@ namespace dxvk {
   }
 
 
-  void D3D9DeviceEx::UploadManagedTexture(D3D9CommonTexture* pResource, bool trackManaged) {
+  void D3D9DeviceEx::UploadManagedTexture(D3D9CommonTexture* pResource) {
     for (uint32_t subresource = 0; subresource < pResource->CountSubresources(); subresource++) {
       if (!pResource->NeedsUpload(subresource) || pResource->GetBuffer(subresource) == nullptr)
         continue;
@@ -5342,16 +5330,13 @@ namespace dxvk {
 
     pResource->ClearDirtyBoxes();
     pResource->ClearNeedsUpload();
-
-    if (trackManaged)
-      TrackManagedTexture(pResource);
   }
 
 
   void D3D9DeviceEx::UploadManagedTextures(uint32_t mask) {
     // Guaranteed to not be nullptr...
     for (uint32_t texIdx : bit::BitMask(mask))
-      UploadManagedTexture(GetCommonTexture(m_state.textures[texIdx]), true);
+      UploadManagedTexture(GetCommonTexture(m_state.textures[texIdx]));
 
     m_activeTexturesToUpload &= ~mask;
   }
@@ -5374,7 +5359,7 @@ namespace dxvk {
 
   void D3D9DeviceEx::MarkTextureMipsDirty(D3D9CommonTexture* pResource) {
     pResource->SetNeedsMipGen(true);
-    pResource->MarkAllNeedReadback();
+    pResource->MarkAllWrittenByGPU();
 
     for (uint32_t i : bit::BitMask(m_activeTextures)) {
       // Guaranteed to not be nullptr...
@@ -6079,7 +6064,7 @@ namespace dxvk {
     for (uint32_t i = 0; i < caps::MaxStreams; i++) {
       auto* vbo = GetCommonBuffer(m_state.vertexBuffers[i].vertexBuffer);
       if (vbo != nullptr && vbo->NeedsUpload())
-        FlushBuffer(vbo, true);
+        FlushBuffer(vbo);
     }
 
     const uint32_t usedSamplerMask = m_psShaderMasks.samplerMask | m_vsShaderMasks.samplerMask;
@@ -6095,7 +6080,7 @@ namespace dxvk {
 
     auto* ibo = GetCommonBuffer(m_state.indices);
     if (ibo != nullptr && ibo->NeedsUpload())
-      FlushBuffer(ibo, true);
+      FlushBuffer(ibo);
 
     UpdateFog();
 
@@ -7017,7 +7002,7 @@ namespace dxvk {
       });
     }
 
-    dstTextureInfo->MarkAllNeedReadback();
+    dstTextureInfo->MarkAllWrittenByGPU();
   }
 
 
@@ -7367,114 +7352,6 @@ namespace dxvk {
     SynchronizeCsThread();
 
     return D3D_OK;
-  }
-
-  void D3D9DeviceEx::RemoveManagedTexture(D3D9CommonTexture *pResource) {
-    if (!env::is32BitHostPlatform())
-      return;
-
-    if (!pResource->IsManaged())
-      return;
-
-    D3D9DeviceLock lock = LockDevice();
-    m_managedTextures.erase(pResource);
-  }
-
-  void D3D9DeviceEx::TrackManagedTexture(D3D9CommonTexture* pResource) {
-    if (!env::is32BitHostPlatform())
-      return;
-
-    if (!pResource->IsManaged())
-      return;
-
-    D3D9DeviceLock lock = LockDevice();
-
-    if (pResource->DoesRetainManagedMappingBuffer())
-      return;
-
-    auto existing = m_managedTextures.find(pResource);
-    if (existing != m_managedTextures.end()) {
-      existing->second = m_frameCounter;
-    } else {
-      m_managedTextures.emplace(pResource, m_frameCounter);
-    }
-  }
-
-  void D3D9DeviceEx::TrackManagedBuffer(D3D9CommonBuffer* pResource) {
-    if (!env::is32BitHostPlatform())
-      return;
-
-    if (!IsPoolManaged(pResource->Desc()->Pool) || pResource->DoesRetainManagedMappingBuffer())
-      return;
-
-    auto existing = m_managedBuffers.find(pResource);
-    if (existing != m_managedBuffers.end()) {
-      existing->second = m_frameCounter;
-    } else {
-      m_managedBuffers.emplace(pResource, m_frameCounter);
-    }
-  }
-
-  void D3D9DeviceEx::RemoveManagedBuffer(D3D9CommonBuffer *pResource) {
-    if (!env::is32BitHostPlatform())
-      return;
-
-    if (!IsPoolManaged(pResource->Desc()->Pool))
-      return;
-
-    D3D9DeviceLock lock = LockDevice();
-    m_managedBuffers.erase(pResource);
-  }
-
-  void D3D9DeviceEx::ClearUnusedManagedResources() {
-    if (!env::is32BitHostPlatform())
-      return;
-
-    for (auto iter = m_managedTextures.begin(); iter != m_managedTextures.end();) {
-      const bool needsUpload = iter->first->NeedsAnyUpload();
-      const bool forceUpload = needsUpload && m_frameCounter - iter->second > m_managedCleanupThreshold;
-      const bool retainBuffer = iter->first->DoesRetainManagedMappingBuffer();
-      const bool mappingBufferUnused = (!needsUpload || forceUpload) && m_frameCounter - iter->second > m_managedCleanupThreshold * 2 && !retainBuffer;
-
-      if (forceUpload) {
-        // The texture was marked dirty but never actually used.
-        // Just upload it after a while so we can free the mapping buffer.
-        UploadManagedTexture(iter->first, false);
-      }
-
-      if (mappingBufferUnused) {
-        for (uint32_t i = 0; i < iter->first->CountSubresources(); i++) {
-          iter->first->DestroyBufferSubresource(i);
-        }
-        iter = m_managedTextures.erase(iter);
-      } else if (retainBuffer) {
-        iter = m_managedTextures.erase(iter);
-      } else {
-        iter++;
-      }
-    }
-
-    for (auto iter = m_managedBuffers.begin(); iter != m_managedBuffers.end();) {
-      const bool needsUpload = iter->first->NeedsUpload();
-      const bool forceUpload = needsUpload && m_frameCounter - iter->second > m_managedCleanupThreshold;
-      const bool retainBuffer = iter->first->DoesRetainManagedMappingBuffer();
-      const bool mappingBufferUnused = (!needsUpload || forceUpload) && m_frameCounter - iter->second > m_managedCleanupThreshold * 2 && !retainBuffer;
-
-      if (forceUpload) {
-        // The texture was marked dirty but never actually used.
-        // Just upload it after a while so we can free the mapping buffer.
-        FlushBuffer(iter->first, false);
-      }
-
-      if (mappingBufferUnused) {
-        iter->first->DestroyStagingBuffer();
-        iter = m_managedBuffers.erase(iter);
-      } else if (retainBuffer) {
-        iter = m_managedBuffers.erase(iter);
-      } else {
-        iter++;
-      }
-    }
   }
 
 }
