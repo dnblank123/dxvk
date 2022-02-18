@@ -140,11 +140,13 @@ namespace dxvk {
       cQuery->End(ctx);
     });
 
-    if (unlikely(query->IsEvent())) {
+    if (unlikely(query->TrackStalls())) {
       query->NotifyEnd();
-      query->IsStalling()
-        ? Flush()
-        : FlushImplicit(TRUE);
+
+      if (query->IsStalling())
+        Flush();
+      else if (query->IsEvent())
+        FlushImplicit(TRUE);
     }
   }
 
@@ -733,12 +735,16 @@ namespace dxvk {
           D3D11CommonTexture*         pResource,
           UINT                        Subresource) {
     pResource->TrackSequenceNumber(Subresource, m_csSeqNum + 1);
+
+    FlushImplicit(TRUE);
   }
 
 
   void D3D11ImmediateContext::TrackBufferSequenceNumber(
           D3D11Buffer*                pResource) {
     pResource->TrackSequenceNumber(m_csSeqNum + 1);
+
+    FlushImplicit(TRUE);
   }
 
 
