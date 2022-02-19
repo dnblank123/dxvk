@@ -40,13 +40,11 @@ namespace dxvk {
 
   void D3D9Initializer::InitTexture(
           D3D9CommonTexture* pTexture,
-          void*              pInitialData) {    
-    if (pTexture->GetMapMode() == D3D9_COMMON_TEXTURE_MAP_MODE_NONE)
+          void*              pInitialData) {
+    if (pTexture->GetMapMode() != D3D9_COMMON_TEXTURE_MAP_MODE_BACKED)
       return;
 
-    (pTexture->GetMapMode() == D3D9_COMMON_TEXTURE_MAP_MODE_BACKED)
-      ? InitDeviceLocalTexture(pTexture)
-      : InitHostVisibleTexture(pTexture, pInitialData);
+    InitDeviceLocalTexture(pTexture);
   }
 
 
@@ -102,47 +100,6 @@ namespace dxvk {
     InitImage(pTexture->GetImage());
 
     FlushImplicit();
-  }
-
-
-  void D3D9Initializer::InitHostVisibleTexture(
-          D3D9CommonTexture* pTexture,
-          void*              pInitialData) {
-    // If the buffer is mapped, we can write data directly
-    // to the mapped memory region instead of doing it on
-    // the GPU. Same goes for zero-initialization.
-    const D3D9_COMMON_TEXTURE_DESC* desc = pTexture->Desc();
-    for (uint32_t a = 0; a < desc->ArraySize; a++) {
-      for (uint32_t m = 0; m < desc->MipLevels; m++) {
-        uint32_t subresource = pTexture->CalcSubresource(a, m);
-        DxvkBufferSliceHandle mapSlice  = pTexture->GetBuffer(subresource)->getSliceHandle();
-
-        if (pInitialData != nullptr) {
-          VkExtent3D mipExtent = pTexture->GetExtentMip(m);
-          const DxvkFormatInfo* formatInfo = imageFormatInfo(pTexture->GetFormatMapping().FormatColor);
-          VkExtent3D blockCount = util::computeBlockCount(mipExtent, formatInfo->blockSize);
-          uint32_t pitch = blockCount.width * formatInfo->elementSize;
-          uint32_t alignedPitch = align(pitch, 4);
-
-          util::packImageData(
-            mapSlice.mapPtr,
-            pInitialData,
-            pitch,
-            pitch * blockCount.height,
-            alignedPitch,
-            alignedPitch * blockCount.height,
-            D3D9CommonTexture::GetImageTypeFromResourceType(pTexture->GetType()),
-            mipExtent,
-            pTexture->Desc()->ArraySize,
-            formatInfo,
-            VK_IMAGE_ASPECT_COLOR_BIT);
-        } else {
-          std::memset(
-            mapSlice.mapPtr, 0,
-            mapSlice.length);
-        }
-      }
-    }
   }
 
 

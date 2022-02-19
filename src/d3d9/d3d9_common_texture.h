@@ -3,10 +3,12 @@
 #include "d3d9_format.h"
 #include "d3d9_util.h"
 #include "d3d9_caps.h"
+#include "d3d9_mem.h"
 
 #include "../dxvk/dxvk_device.h"
 
 #include "../util/util_bit.h"
+#include <minwindef.h>
 
 namespace dxvk {
 
@@ -140,20 +142,16 @@ namespace dxvk {
       return m_resolveImage;
     }
 
-    const Rc<DxvkBuffer>& GetBuffer(UINT Subresource) {
-      return m_buffers[Subresource];
+    void* GetLockingData(UINT Subresource) {
+      D3D9Memory& memory = m_lockingData[Subresource];
+      if (!memory)
+        return nullptr;
+
+      return memory.Ptr();
     }
 
-
-    DxvkBufferSliceHandle GetMappedSlice(UINT Subresource) {
-      return m_mappedSlices[Subresource];
-    }
-
-
-    DxvkBufferSliceHandle DiscardMapSlice(UINT Subresource) {
-      DxvkBufferSliceHandle handle = m_buffers[Subresource]->allocSlice();
-      m_mappedSlices[Subresource] = handle;
-      return handle;
+    const Rc<DxvkBuffer>& GetReadbackBuffer(UINT Subresource) {
+      return m_readbackBuffers[Subresource];
     }
 
     /**
@@ -214,15 +212,17 @@ namespace dxvk {
       return Face * m_desc.MipLevels + MipLevel;
     }
 
+    void EnsureReadbackBuffer(UINT Subresource);
+
     /**
      * \brief Creates buffers
      * Creates mapping and staging buffers for all subresources
      * allocates new buffers if necessary
      */
-    void CreateBuffers() {
+    void EnsureLockingData() {
       const uint32_t count = CountSubresources();
       for (uint32_t i = 0; i < count; i++)
-        CreateBufferSubresource(i);
+        EnsureLockingData(i);
     }
 
     /**
@@ -231,15 +231,23 @@ namespace dxvk {
      * allocates new buffers if necessary
      * \returns Whether an allocation happened
      */
-    bool CreateBufferSubresource(UINT Subresource);
+    bool EnsureLockingData(UINT Subresource);
+
+    void UnmapLockingData(UINT Subresource) {
+      m_lockingData[Subresource].Unmap();
+    }
 
     /**
      * \brief Destroys a buffer
      * Destroys mapping and staging buffers for a given subresource
      */
-    void DestroyBufferSubresource(UINT Subresource) {
-      m_buffers[Subresource] = nullptr;
-      SetWrittenByGPU(Subresource, true);
+    void FreeLockingData(UINT Subresource) {
+      m_lockingData[Subresource] = {};
+      SetNeedsReadback(Subresource, true);
+    }
+
+    void DestroyReadbackBuffer(UINT Subresource) {
+      m_readbackBuffers[Subresource] = nullptr;
     }
 
     bool IsDynamic() const {
@@ -326,11 +334,11 @@ namespace dxvk {
 
     bool IsAnySubresourceLocked() const { return m_locked.any(); }
 
-    void SetWrittenByGPU(UINT Subresource, bool value) { m_wasWrittenByGPU.set(Subresource, value); }
+    void SetNeedsReadback(UINT Subresource, bool value) { m_needsReadback.set(Subresource, value); }
 
-    bool WasWrittenByGPU(UINT Subresource) const { return m_wasWrittenByGPU.get(Subresource); }
+    bool NeedsReachback(UINT Subresource) const { return m_needsReadback.get(Subresource); }
 
-    void MarkAllWrittenByGPU() { m_wasWrittenByGPU.setAll(); }
+    void MarkAllNeedReadback() { m_needsReadback.setAll(); }
 
     void SetReadOnlyLocked(UINT Subresource, bool readOnly) { return m_readOnly.set(Subresource, readOnly); }
 
@@ -377,11 +385,6 @@ namespace dxvk {
     bool NeedsUpload(UINT Subresource) const { return m_needsUpload.get(Subresource); }
     bool NeedsAnyUpload() { return m_needsUpload.any(); }
     void ClearNeedsUpload() { return m_needsUpload.clearAll();  }
-    bool DoesStagingBufferUploads(UINT Subresource) const { return m_uploadUsingStaging.get(Subresource); }
-
-    void EnableStagingBufferUploads(UINT Subresource) {
-      m_uploadUsingStaging.set(Subresource, true);
-    }
 
     void SetNeedsMipGen(bool value) { m_needsMipGen = value; }
     bool NeedsMipGen() const { return m_needsMipGen; }
@@ -434,6 +437,11 @@ namespace dxvk {
 
     static VkImageType GetImageTypeFromResourceType(
             D3DRESOURCETYPE  Dimension);
+    /**
+     * \brief Mip level
+     * \returns Size of packed mip level in bytes
+     */
+    VkDeviceSize GetMipSize(UINT Subresource) const;
 
   private:
 
@@ -445,9 +453,9 @@ namespace dxvk {
     Rc<DxvkImage>                 m_image;
     Rc<DxvkImage>                 m_resolveImage;
     D3D9SubresourceArray<
-      Rc<DxvkBuffer>>             m_buffers;
+      Rc<DxvkBuffer>>             m_readbackBuffers;
     D3D9SubresourceArray<
-      DxvkBufferSliceHandle>      m_mappedSlices;
+      D3D9Memory>                 m_lockingData = {};
 
     D3D9_VK_FORMAT_MAPPING        m_mapping;
 
@@ -466,11 +474,9 @@ namespace dxvk {
 
     D3D9SubresourceBitset         m_readOnly = { };
 
-    D3D9SubresourceBitset         m_wasWrittenByGPU = { };
+    D3D9SubresourceBitset         m_needsReadback = { };
 
     D3D9SubresourceBitset         m_needsUpload = { };
-
-    D3D9SubresourceBitset         m_uploadUsingStaging = { };
 
     DWORD                         m_exposedMipLevels = 0;
 
@@ -480,11 +486,6 @@ namespace dxvk {
 
     std::array<D3DBOX, 6>         m_dirtyBoxes;
 
-    /**
-     * \brief Mip level
-     * \returns Size of packed mip level in bytes
-     */
-    VkDeviceSize GetMipSize(UINT Subresource) const;
 
     Rc<DxvkImage> CreatePrimaryImage(D3DRESOURCETYPE ResourceType, bool TryOffscreenRT) const;
 

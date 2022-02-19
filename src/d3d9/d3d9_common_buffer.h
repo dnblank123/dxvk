@@ -155,12 +155,12 @@ namespace dxvk {
     /**
     * \brief Whether or not the buffer was written to by the GPU (in IDirect3DDevice9::ProcessVertices)
     */
-    inline bool WasWrittenByGPU() const     { return m_wasWrittenByGPU; }
+    inline bool NeedsReadback() const     { return m_needsReadback; }
 
     /**
     * \brief Sets whether or not the buffer was written to by the GPU
     */
-    inline void SetWrittenByGPU(bool state) { m_wasWrittenByGPU = state; }
+    inline void SetNeedsReadback(bool state) { m_needsReadback = state; }
 
     inline uint32_t IncrementLockCount() { return ++m_lockCount; }
     inline uint32_t DecrementLockCount() {
@@ -175,15 +175,6 @@ namespace dxvk {
      * \brief Whether or not the staging buffer needs to be copied to the actual buffer
      */
     inline bool NeedsUpload() { return m_desc.Pool != D3DPOOL_DEFAULT && !m_dirtyRange.IsDegenerate(); }
-
-    inline bool DoesStagingBufferUploads() const { return m_uploadUsingStaging; }
-
-    inline void EnableStagingBufferUploads() {
-      if (GetMapMode() != D3D9_COMMON_BUFFER_MAP_MODE_BUFFER)
-        return;
-
-      m_uploadUsingStaging = true;
-    }
 
     void PreLoad();
 
@@ -207,8 +198,7 @@ namespace dxvk {
     D3D9DeviceEx*               m_parent;
     const D3D9_BUFFER_DESC      m_desc;
     DWORD                       m_mapFlags;
-    bool                        m_wasWrittenByGPU = false;
-    bool                        m_uploadUsingStaging = false;
+    bool                        m_needsReadback = false;
 
     Rc<DxvkBuffer>              m_buffer;
     Rc<DxvkBuffer>              m_stagingBuffer;

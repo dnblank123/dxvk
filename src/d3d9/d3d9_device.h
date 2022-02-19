@@ -9,6 +9,7 @@
 #include "d3d9_multithread.h"
 #include "d3d9_adapter.h"
 #include "d3d9_constant_set.h"
+#include "d3d9_mem.h"
 
 #include "d3d9_state.h"
 
@@ -703,6 +704,15 @@ namespace dxvk {
             D3D9CommonTexture*      pResource,
             UINT                    Subresource);
 
+    void UpdateTextureFromBuffer(
+            D3D9CommonTexture*      pDestTexture,
+            D3D9CommonTexture*      pSrcTexture,
+            UINT                    DestSubresource,
+            UINT                    SrcSubresource,
+            VkOffset3D              SrcOffset,
+            VkExtent3D              SrcExtent,
+            VkOffset3D              DestOffset);
+
     void EmitGenerateMips(
             D3D9CommonTexture* pResource);
 
@@ -914,6 +924,10 @@ namespace dxvk {
 
     UINT GetSamplerCount() const {
       return m_samplerCount.load();
+    }
+
+    D3D9MemoryAllocator* GetAllocator() {
+      return &m_memoryAllocator;
     }
 
   private:
@@ -1128,6 +1142,8 @@ namespace dxvk {
 
     D3D9Adapter*                    m_adapter;
     Rc<DxvkDevice>                  m_dxvkDevice;
+
+    D3D9MemoryAllocator             m_memoryAllocator;
 
     uint32_t                        m_frameLatency = DefaultFrameLatency;
 
