@@ -112,7 +112,7 @@ namespace dxvk {
 
   D3D9DeviceEx::~D3D9DeviceEx() {
     Flush();
-    SynchronizeCsThread(DxvkCsThread::SynchronizeAll);
+    SynchronizeCsThread();
 
     delete m_initializer;
     delete m_converter;
@@ -328,7 +328,7 @@ namespace dxvk {
       return hr;
 
     Flush();
-    SynchronizeCsThread(DxvkCsThread::SynchronizeAll);
+    SynchronizeCsThread();
 
     return D3D_OK;
   }
@@ -913,7 +913,6 @@ namespace dxvk {
     });
 
     dstTexInfo->SetWrittenByGPU(dst->GetSubresource(), true);
-    TrackTextureMappingBufferSequenceNumber(dstTexInfo, dst->GetSubresource());
 
     return D3D_OK;
   }
@@ -2682,7 +2681,6 @@ namespace dxvk {
     }
 
     dst->SetWrittenByGPU(true);
-    TrackBufferMappingBufferSequenceNumber(dst);
 
     return D3D_OK;
   }
@@ -4051,7 +4049,6 @@ namespace dxvk {
 
   bool D3D9DeviceEx::WaitForResource(
   const Rc<DxvkResource>&                 Resource,
-        uint64_t                          SequenceNumber,
         DWORD                             MapFlags) {
     // Wait for the any pending D3D9 command to be executed
     // on the CS thread so that we can determine whether the
@@ -4063,7 +4060,7 @@ namespace dxvk {
       : DxvkAccess::Read;
 
     if (!Resource->isInUse(access))
-      SynchronizeCsThread(SequenceNumber);
+      SynchronizeCsThread();
 
     if (Resource->isInUse(access)) {
       if (MapFlags & D3DLOCK_DONOTWAIT) {
@@ -4077,7 +4074,7 @@ namespace dxvk {
         // Make sure pending commands using the resource get
         // executed on the the GPU if we have to wait for it
         Flush();
-        SynchronizeCsThread(SequenceNumber);
+        SynchronizeCsThread();
 
         m_dxvkDevice->waitForResource(Resource, access);
       }
@@ -4230,10 +4227,10 @@ namespace dxvk {
         std::memset(physSlice.mapPtr, 0, physSlice.length);
       }
       else if (!skipWait) {
-        if (!(Flags & D3DLOCK_DONOTWAIT) && !WaitForResource(mappedBuffer, pResource->GetMappingBufferSequenceNumber(Subresource), D3DLOCK_DONOTWAIT))
+        if (!(Flags & D3DLOCK_DONOTWAIT) && !WaitForResource(mappedBuffer, D3DLOCK_DONOTWAIT))
           pResource->EnableStagingBufferUploads(Subresource);
 
-        if (!WaitForResource(mappedBuffer, pResource->GetMappingBufferSequenceNumber(Subresource), Flags))
+        if (!WaitForResource(mappedBuffer, Flags))
           return D3DERR_WASSTILLDRAWING;
       }
     }
@@ -4312,7 +4309,7 @@ namespace dxvk {
           });
         }
 
-        if (!WaitForResource(mappedBuffer, DxvkCsThread::SynchronizeAll, Flags))
+        if (!WaitForResource(mappedBuffer, Flags))
           return D3DERR_WASSTILLDRAWING;
       } else {
         // If we are a new alloc, and we weren't written by the GPU
@@ -4524,7 +4521,7 @@ namespace dxvk {
         pitch, std::min(convertFormat.PlaneCount, 2u) * pitch * texLevelExtentBlockCount.height);
 
       Flush();
-      SynchronizeCsThread(DxvkCsThread::SynchronizeAll);
+      SynchronizeCsThread();
 
       m_converter->ConvertFormat(
         convertFormat,
@@ -4534,8 +4531,6 @@ namespace dxvk {
 
     if (pResource->IsAutomaticMip())
       MarkTextureMipsDirty(pResource);
-
-    TrackTextureMappingBufferSequenceNumber(pResource, Subresource);
 
     return D3D_OK;
   }
@@ -4641,10 +4636,10 @@ namespace dxvk {
       const bool directMapping = pResource->GetMapMode() == D3D9_COMMON_BUFFER_MAP_MODE_DIRECT;
       const bool skipWait = (!wasWrittenByGPU && (usesStagingBuffer || readOnly || (noOverlap && !directMapping))) || noOverwrite;
       if (!skipWait) {
-        if (!(Flags & D3DLOCK_DONOTWAIT) && !WaitForResource(mappingBuffer, pResource->GetMappingBufferSequenceNumber(), D3DLOCK_DONOTWAIT))
+        if (!(Flags & D3DLOCK_DONOTWAIT) && !WaitForResource(mappingBuffer, D3DLOCK_DONOTWAIT))
           pResource->EnableStagingBufferUploads();
 
-        if (!WaitForResource(mappingBuffer, pResource->GetMappingBufferSequenceNumber(), Flags))
+        if (!WaitForResource(mappingBuffer, Flags))
           return D3DERR_WASSTILLDRAWING;
 
         pResource->SetWrittenByGPU(false);
@@ -4737,7 +4732,7 @@ namespace dxvk {
 
 
   void D3D9DeviceEx::EmitCsChunk(DxvkCsChunkRef&& chunk) {
-    m_csSeqNum = m_csThread.dispatchChunk(std::move(chunk));
+    m_csThread.dispatchChunk(std::move(chunk));
     m_csIsBusy = true;
   }
 
@@ -4760,14 +4755,14 @@ namespace dxvk {
   }
 
 
-  void D3D9DeviceEx::SynchronizeCsThread(uint64_t SequenceNumber) {
+  void D3D9DeviceEx::SynchronizeCsThread() {
     D3D9DeviceLock lock = LockDevice();
 
     // Dispatch current chunk so that all commands
     // recorded prior to this function will be run
     FlushCsChunk();
 
-    m_csThread.synchronize(SequenceNumber);
+    m_csThread.synchronize(DxvkCsThread::SynchronizeAll);
   }
 
 
@@ -7354,20 +7349,9 @@ namespace dxvk {
       return hr;
 
     Flush();
-    SynchronizeCsThread(DxvkCsThread::SynchronizeAll);
+    SynchronizeCsThread();
 
     return D3D_OK;
-  }
-
-  void D3D9DeviceEx::TrackBufferMappingBufferSequenceNumber(
-        D3D9CommonBuffer* pResource) {
-    pResource->TrackMappingBufferSequenceNumber(m_csSeqNum + 1);
-  }
-
-  void D3D9DeviceEx::TrackTextureMappingBufferSequenceNumber(
-      D3D9CommonTexture* pResource,
-      UINT Subresource) {
-    pResource->TrackMappingBufferSequenceNumber(Subresource, m_csSeqNum + 1);
   }
 
 }
