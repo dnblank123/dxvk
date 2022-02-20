@@ -112,7 +112,7 @@ namespace dxvk {
 
   D3D9DeviceEx::~D3D9DeviceEx() {
     Flush();
-    SynchronizeCsThread();
+    SynchronizeCsThread(DxvkCsThread::SynchronizeAll);
 
     delete m_initializer;
     delete m_converter;
@@ -328,7 +328,7 @@ namespace dxvk {
       return hr;
 
     Flush();
-    SynchronizeCsThread();
+    SynchronizeCsThread(DxvkCsThread::SynchronizeAll);
 
     return D3D_OK;
   }
@@ -775,10 +775,22 @@ namespace dxvk {
     if (unlikely(srcTexInfo->Desc()->Pool != D3DPOOL_SYSTEMMEM || dstTexInfo->Desc()->Pool != D3DPOOL_DEFAULT))
       return D3DERR_INVALIDCALL;
 
+    if (srcTexInfo->Desc()->MipLevels < dstTexInfo->Desc()->MipLevels)
+      return D3DERR_INVALIDCALL;
+
+    if (dstTexInfo->Desc()->Format != srcTexInfo->Desc()->Format)
+      return D3DERR_INVALIDCALL;
+
     const Rc<DxvkImage> dstImage  = dstTexInfo->GetImage();
     const DxvkFormatInfo* formatInfo = imageFormatInfo(dstTexInfo->GetFormatMapping().FormatColor);
-    uint32_t mipLevels   = std::min(srcTexInfo->Desc()->MipLevels, dstTexInfo->Desc()->MipLevels);
+    uint32_t mipLevels = dstTexInfo->Desc()->MipLevels;
     uint32_t arraySlices = std::min(srcTexInfo->Desc()->ArraySize, dstTexInfo->Desc()->ArraySize);
+
+    uint32_t srcMipOffset = srcTexInfo->Desc()->MipLevels - mipLevels;
+    VkExtent3D srcFirstMipExtent = util::computeMipLevelExtent(srcTexInfo->GetExtent(), srcMipOffset);
+    VkExtent3D dstFirstMipExtent = dstTexInfo->GetExtent();
+    if (srcFirstMipExtent != dstFirstMipExtent)
+      return D3DERR_INVALIDCALL;
 
     if (unlikely(srcTexInfo->IsAutomaticMip() && !dstTexInfo->IsAutomaticMip()))
       return D3DERR_INVALIDCALL;
@@ -791,23 +803,24 @@ namespace dxvk {
       if (box.Left >= box.Right || box.Top >= box.Bottom || box.Front >= box.Back)
         continue;
 
-      for (uint32_t m = 0; m < mipLevels; m++) {
-        VkImageSubresourceLayers dstLayers = { VK_IMAGE_ASPECT_COLOR_BIT, m, a, 1 };
+      for (uint32_t dstMip = 0; dstMip < mipLevels; dstMip++) {
+        uint32_t srcMip = dstMip + srcMipOffset;
+        VkImageSubresourceLayers dstLayers = { VK_IMAGE_ASPECT_COLOR_BIT, dstMip, a, 1 };
 
         VkOffset3D scaledBoxOffset = {
-          int32_t(alignDown(box.Left  >> m, formatInfo->blockSize.width)),
-          int32_t(alignDown(box.Top   >> m, formatInfo->blockSize.height)),
-          int32_t(alignDown(box.Front >> m, formatInfo->blockSize.depth))
+          int32_t(alignDown(box.Left  >> srcMip, formatInfo->blockSize.width)),
+          int32_t(alignDown(box.Top   >> srcMip, formatInfo->blockSize.height)),
+          int32_t(alignDown(box.Front >> srcMip, formatInfo->blockSize.depth))
         };
         VkExtent3D scaledBoxExtent = util::computeMipLevelExtent({
           uint32_t(box.Right  - int32_t(alignDown(box.Left, formatInfo->blockSize.width))),
           uint32_t(box.Bottom - int32_t(alignDown(box.Top, formatInfo->blockSize.height))),
           uint32_t(box.Back   - int32_t(alignDown(box.Front, formatInfo->blockSize.depth)))
-        }, m);
+        }, srcMip);
         VkExtent3D scaledBoxExtentBlockCount = util::computeBlockCount(scaledBoxExtent, formatInfo->blockSize);
         VkExtent3D scaledAlignedBoxExtent = util::computeBlockExtent(scaledBoxExtentBlockCount, formatInfo->blockSize);
 
-        VkExtent3D texLevelExtent = dstImage->mipLevelExtent(m);
+        VkExtent3D texLevelExtent = dstImage->mipLevelExtent(dstMip);
         VkExtent3D texLevelExtentBlockCount = util::computeBlockCount(texLevelExtent, formatInfo->blockSize);
 
         scaledAlignedBoxExtent.width = std::min<uint32_t>(texLevelExtent.width - scaledBoxOffset.x, scaledAlignedBoxExtent.width);
@@ -822,7 +835,7 @@ namespace dxvk {
             + boxOffsetBlockCount.y * pitch
             + boxOffsetBlockCount.x * formatInfo->elementSize;
 
-        void* srcData = reinterpret_cast<uint8_t*>(srcTexInfo->GetMappedSlice(srcTexInfo->CalcSubresource(a, m)).mapPtr) + copySrcOffset;
+        void* srcData = reinterpret_cast<uint8_t*>(srcTexInfo->GetMappedSlice(srcTexInfo->CalcSubresource(a, srcMip)).mapPtr) + copySrcOffset;
         util::packImageData(
           slice.mapPtr, srcData, scaledBoxExtentBlockCount, formatInfo->elementSize,
           pitch, pitch * texLevelExtentBlockCount.height);
@@ -844,7 +857,7 @@ namespace dxvk {
             cSrcSlice.buffer(), cSrcSlice.offset(), 0, 0);
         });
 
-        dstTexInfo->SetWrittenByGPU(dstTexInfo->CalcSubresource(a, m), true);
+        dstTexInfo->SetWrittenByGPU(dstTexInfo->CalcSubresource(a, dstMip), true);
       }
     }
 
@@ -913,6 +926,7 @@ namespace dxvk {
     });
 
     dstTexInfo->SetWrittenByGPU(dst->GetSubresource(), true);
+    TrackTextureMappingBufferSequenceNumber(dstTexInfo, dst->GetSubresource());
 
     return D3D_OK;
   }
@@ -2681,6 +2695,7 @@ namespace dxvk {
     }
 
     dst->SetWrittenByGPU(true);
+    TrackBufferMappingBufferSequenceNumber(dst);
 
     return D3D_OK;
   }
@@ -4049,6 +4064,7 @@ namespace dxvk {
 
   bool D3D9DeviceEx::WaitForResource(
   const Rc<DxvkResource>&                 Resource,
+        uint64_t                          SequenceNumber,
         DWORD                             MapFlags) {
     // Wait for the any pending D3D9 command to be executed
     // on the CS thread so that we can determine whether the
@@ -4060,7 +4076,7 @@ namespace dxvk {
       : DxvkAccess::Read;
 
     if (!Resource->isInUse(access))
-      SynchronizeCsThread();
+      SynchronizeCsThread(SequenceNumber);
 
     if (Resource->isInUse(access)) {
       if (MapFlags & D3DLOCK_DONOTWAIT) {
@@ -4074,7 +4090,7 @@ namespace dxvk {
         // Make sure pending commands using the resource get
         // executed on the the GPU if we have to wait for it
         Flush();
-        SynchronizeCsThread();
+        SynchronizeCsThread(SequenceNumber);
 
         m_dxvkDevice->waitForResource(Resource, access);
       }
@@ -4227,10 +4243,10 @@ namespace dxvk {
         std::memset(physSlice.mapPtr, 0, physSlice.length);
       }
       else if (!skipWait) {
-        if (!(Flags & D3DLOCK_DONOTWAIT) && !WaitForResource(mappedBuffer, D3DLOCK_DONOTWAIT))
+        if (!(Flags & D3DLOCK_DONOTWAIT) && !WaitForResource(mappedBuffer, pResource->GetMappingBufferSequenceNumber(Subresource), D3DLOCK_DONOTWAIT))
           pResource->EnableStagingBufferUploads(Subresource);
 
-        if (!WaitForResource(mappedBuffer, Flags))
+        if (!WaitForResource(mappedBuffer, pResource->GetMappingBufferSequenceNumber(Subresource), Flags))
           return D3DERR_WASSTILLDRAWING;
       }
     }
@@ -4309,7 +4325,7 @@ namespace dxvk {
           });
         }
 
-        if (!WaitForResource(mappedBuffer, Flags))
+        if (!WaitForResource(mappedBuffer, DxvkCsThread::SynchronizeAll, Flags))
           return D3DERR_WASSTILLDRAWING;
       } else {
         // If we are a new alloc, and we weren't written by the GPU
@@ -4521,7 +4537,7 @@ namespace dxvk {
         pitch, std::min(convertFormat.PlaneCount, 2u) * pitch * texLevelExtentBlockCount.height);
 
       Flush();
-      SynchronizeCsThread();
+      SynchronizeCsThread(DxvkCsThread::SynchronizeAll);
 
       m_converter->ConvertFormat(
         convertFormat,
@@ -4531,6 +4547,8 @@ namespace dxvk {
 
     if (pResource->IsAutomaticMip())
       MarkTextureMipsDirty(pResource);
+
+    TrackTextureMappingBufferSequenceNumber(pResource, Subresource);
 
     return D3D_OK;
   }
@@ -4636,10 +4654,10 @@ namespace dxvk {
       const bool directMapping = pResource->GetMapMode() == D3D9_COMMON_BUFFER_MAP_MODE_DIRECT;
       const bool skipWait = (!wasWrittenByGPU && (usesStagingBuffer || readOnly || (noOverlap && !directMapping))) || noOverwrite;
       if (!skipWait) {
-        if (!(Flags & D3DLOCK_DONOTWAIT) && !WaitForResource(mappingBuffer, D3DLOCK_DONOTWAIT))
+        if (!(Flags & D3DLOCK_DONOTWAIT) && !WaitForResource(mappingBuffer, pResource->GetMappingBufferSequenceNumber(), D3DLOCK_DONOTWAIT))
           pResource->EnableStagingBufferUploads();
 
-        if (!WaitForResource(mappingBuffer, Flags))
+        if (!WaitForResource(mappingBuffer, pResource->GetMappingBufferSequenceNumber(), Flags))
           return D3DERR_WASSTILLDRAWING;
 
         pResource->SetWrittenByGPU(false);
@@ -4732,7 +4750,7 @@ namespace dxvk {
 
 
   void D3D9DeviceEx::EmitCsChunk(DxvkCsChunkRef&& chunk) {
-    m_csThread.dispatchChunk(std::move(chunk));
+    m_csSeqNum = m_csThread.dispatchChunk(std::move(chunk));
     m_csIsBusy = true;
   }
 
@@ -4755,14 +4773,14 @@ namespace dxvk {
   }
 
 
-  void D3D9DeviceEx::SynchronizeCsThread() {
+  void D3D9DeviceEx::SynchronizeCsThread(uint64_t SequenceNumber) {
     D3D9DeviceLock lock = LockDevice();
 
     // Dispatch current chunk so that all commands
     // recorded prior to this function will be run
     FlushCsChunk();
 
-    m_csThread.synchronize(DxvkCsThread::SynchronizeAll);
+    m_csThread.synchronize(SequenceNumber);
   }
 
 
@@ -7349,9 +7367,29 @@ namespace dxvk {
       return hr;
 
     Flush();
-    SynchronizeCsThread();
+    SynchronizeCsThread(DxvkCsThread::SynchronizeAll);
 
     return D3D_OK;
+  }
+
+  void D3D9DeviceEx::TrackBufferMappingBufferSequenceNumber(
+        D3D9CommonBuffer* pResource) {
+    uint64_t sequenceNumber = GetCurrentSequenceNumber();
+    pResource->TrackMappingBufferSequenceNumber(sequenceNumber);
+  }
+
+  void D3D9DeviceEx::TrackTextureMappingBufferSequenceNumber(
+      D3D9CommonTexture* pResource,
+      UINT Subresource) {
+    uint64_t sequenceNumber = GetCurrentSequenceNumber();
+    pResource->TrackMappingBufferSequenceNumber(Subresource, sequenceNumber);
+  }
+
+  uint64_t D3D9DeviceEx::GetCurrentSequenceNumber() {
+    // We do not flush empty chunks, so if we are tracking a resource
+    // immediately after a flush, we need to use the sequence number
+    // of the previously submitted chunk to prevent deadlocks.
+    return m_csChunk->empty() ? m_csSeqNum : m_csSeqNum + 1;
   }
 
 }
