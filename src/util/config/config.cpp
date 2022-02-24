@@ -18,6 +18,7 @@ namespace dxvk {
     { "d3d9.memoryTrackTest",             "True" },  
     { "d3d9.alphaTestWiggleRoom",         "True" },
     { "d3d9.tearFree",                    "False" },
+    { "d3d9.maxFrameRate",                "60" },
     }} },
      /* League of Legends*/ 
 	  { R"(\\League of Legends\.exe$)", {{
