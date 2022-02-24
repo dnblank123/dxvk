@@ -1524,7 +1524,7 @@ namespace dxvk {
     }
 
     // Declare Outputs
-    m_vs.out.POSITION = declareIO(false, DxsoSemantic{ DxsoUsage::Position, 0 }, spv::BuiltInPosition);
+    m_vs.out.POSITION = declareIO(false, DxsoSemantic{ DxsoUsage::Position, 1 }, spv::BuiltInPosition);
     if (m_options.invariantPosition)
       m_module.decorate(m_vs.out.POSITION, spv::DecorationInvariant);
 
