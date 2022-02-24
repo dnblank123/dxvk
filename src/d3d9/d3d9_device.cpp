@@ -1186,7 +1186,7 @@ namespace dxvk {
       auto rtSize = rt->GetSurfaceExtent();
 
       D3DVIEWPORT9 viewport;
-      viewport.X       = 10;
+      viewport.X       = 0;
       viewport.Y       = 0;
       viewport.Width   = rtSize.width;
       viewport.Height  = rtSize.height;
