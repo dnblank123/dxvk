@@ -1,4 +1,4 @@
-project('dxvk', ['c', 'cpp'], version : 'v1.9.4', meson_version : '>= 0.47')
+project('dxvk', ['c', 'cpp'], version : 'v1.10', meson_version : '>= 0.47')
 
 cpu_family = target_machine.cpu_family()
 
@@ -46,6 +46,10 @@ if not dxvk_is_msvc
       add_project_arguments('-gstrict-dwarf', '-gdwarf-2', language: ['c', 'cpp'])
     endif
   endif
+endif
+
+if dxvk_compiler.has_argument('-Wimplicit-fallthrough')
+  add_project_arguments('-Wimplicit-fallthrough', language: 'cpp')
 endif
 
 dxvk_include_path = include_directories('./include')
