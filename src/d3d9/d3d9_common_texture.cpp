@@ -241,13 +241,15 @@ namespace dxvk {
     imageInfo.tiling          = VK_IMAGE_TILING_OPTIMAL;
     imageInfo.layout          = VK_IMAGE_LAYOUT_GENERAL;
     imageInfo.shared          = m_desc.IsBackBuffer;
+
     if (pSharedHandle) {
       imageInfo.sharing.type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT;
-      if (*pSharedHandle) {
-        imageInfo.shared = true;
-        imageInfo.sharing.mode = *pSharedHandle == INVALID_HANDLE_VALUE ? DxvkSharedHandleMode::Export : DxvkSharedHandleMode::Import;
-        imageInfo.sharing.handle = *pSharedHandle;
-      }
+      imageInfo.sharing.mode = (*pSharedHandle == INVALID_HANDLE_VALUE || *pSharedHandle == nullptr)
+        ? DxvkSharedHandleMode::Export
+        : DxvkSharedHandleMode::Import;
+      imageInfo.sharing.type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT;
+      imageInfo.sharing.handle = *pSharedHandle;
+      imageInfo.shared = true;
       // TODO: validate metadata?
     }
 
@@ -493,10 +495,12 @@ namespace dxvk {
     switch (m_desc.Format) {
       case D3D9Format::A2B10G10R10: dxgiFormat = DXGI_FORMAT_R10G10B10A2_UNORM; break;
       case D3D9Format::A16B16G16R16F: dxgiFormat = DXGI_FORMAT_R16G16B16A16_FLOAT; break;
-      case D3D9Format::A8B8G8R8: dxgiFormat = DXGI_FORMAT_B8G8R8A8_UNORM; break;
+      case D3D9Format::A8B8G8R8: dxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM; break;
+      case D3D9Format::X8B8G8R8: dxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM; break; /* No RGBX in DXGI */
+      case D3D9Format::A8R8G8B8: dxgiFormat = DXGI_FORMAT_B8G8R8A8_UNORM; break;
       case D3D9Format::X8R8G8B8: dxgiFormat = DXGI_FORMAT_B8G8R8X8_UNORM; break;
       default:
-        Logger::warn(str::format("D3D9: Unsupported format for shared textures", m_desc.Format));
+        Logger::warn(str::format("D3D9: Unsupported format for shared textures: ", m_desc.Format));
         return;
     }
 
