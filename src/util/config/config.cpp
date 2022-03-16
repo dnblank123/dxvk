@@ -19,8 +19,11 @@ namespace dxvk {
     { "d3d9.alphaTestWiggleRoom",         "True" },
     { "d3d9.tearFree",                    "False" },
     }} },
+    { R"(\\DNLauncher\.exe$)", {{
+    { "d3d9.shaderModel",            	     "1" },  
+    }} },
      /* League of Legends*/ 
-	  { R"(\\League of Legends\.exe$)", {{
+    { R"(\\League of Legends\.exe$)", {{
     { "d3d11.maxTessFactor",              "8" },
     { "dxgi.maxFrameLatency",             "4" },
     { "d3d11.relaxedBarriers",            "True" },
