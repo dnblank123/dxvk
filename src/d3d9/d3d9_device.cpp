@@ -870,6 +870,10 @@ namespace dxvk {
     if (dstTexInfo->Desc()->Pool == D3DPOOL_DEFAULT)
       return this->StretchRect(pRenderTarget, nullptr, pDestSurface, nullptr, D3DTEXF_NONE);
 
+    VkExtent3D dstTexExtent = dstTexInfo->GetExtentMip(dst->GetMipLevel());
+    VkExtent3D srcTexExtent = srcTexInfo->GetExtentMip(src->GetMipLevel());
+
+    dstTexInfo->CreateBufferSubresource(dst->GetSubresource(), dstTexExtent.width > srcTexExtent.width || dstTexExtent.height > srcTexExtent.height);
     Rc<DxvkBuffer> dstBuffer = dstTexInfo->GetBuffer(dst->GetSubresource());
 
     Rc<DxvkImage>  srcImage                 = srcTexInfo->GetImage();
@@ -881,9 +885,8 @@ namespace dxvk {
       srcSubresource.mipLevel,
       srcSubresource.arrayLayer, 1 };
 
-    VkExtent3D srcExtent = srcTexInfo->GetExtentMip(src->GetMipLevel());
 
-    VkExtent3D texLevelExtentBlockCount = util::computeBlockCount(srcExtent, srcFormatInfo->blockSize);
+    VkExtent3D texLevelExtentBlockCount = util::computeBlockCount(srcTexExtent, srcFormatInfo->blockSize);
     VkDeviceSize pitch = align(texLevelExtentBlockCount.width * uint32_t(srcFormatInfo->elementSize), 4);
     uint32_t pitchBlocks = uint32_t(pitch / srcFormatInfo->elementSize);
     VkExtent2D dstExtent = VkExtent2D{ pitchBlocks,
@@ -893,7 +896,7 @@ namespace dxvk {
       cBuffer       = dstBuffer,
       cImage        = srcImage,
       cSubresources = srcSubresourceLayers,
-      cLevelExtent  = srcExtent,
+      cLevelExtent  = srcTexExtent,
       cDstExtent    = dstExtent
     ] (DxvkContext* ctx) {
       ctx->copyImageToBuffer(cBuffer, 0, 4, 0,
@@ -4146,10 +4149,6 @@ namespace dxvk {
 
     auto& desc = *(pResource->Desc());
 
-    bool alloced = pResource->CreateBufferSubresource(Subresource);
-
-    const Rc<DxvkBuffer> mappedBuffer = pResource->GetBuffer(Subresource);
-
     auto& formatMapping = pResource->GetFormatMapping();
 
     const DxvkFormatInfo* formatInfo = formatMapping.IsValid()
@@ -4204,12 +4203,15 @@ namespace dxvk {
     bool needsReadback = pResource->NeedsReachback(Subresource) || renderable;
     pResource->SetNeedsReadback(Subresource, false);
 
-    DxvkBufferSliceHandle physSlice;
+    void* mapPtr;
 
-    if (Flags & D3DLOCK_DISCARD) {
+    if ((Flags & D3DLOCK_DISCARD) && !pResource->DoesStagingBufferUploads(Subresource)) {
       // We do not have to preserve the contents of the
       // buffer if the entire image gets discarded.
-      physSlice = pResource->DiscardMapSlice(Subresource);
+      pResource->CreateBufferSubresource(Subresource, false);
+      DxvkBufferSliceHandle physSlice = pResource->DiscardMapSlice(Subresource);
+      mapPtr = physSlice.mapPtr;
+      const Rc<DxvkBuffer> mappedBuffer = pResource->GetBuffer(Subresource);
 
       EmitCs([
         cImageBuffer = std::move(mappedBuffer),
@@ -4218,20 +4220,18 @@ namespace dxvk {
         ctx->invalidateBuffer(cImageBuffer, cBufferSlice);
       });
     } else {
-      physSlice = pResource->GetMappedSlice(Subresource);
+      const bool alloced = pResource->AllocLockingData(Subresource, !needsReadback);
+      mapPtr = pResource->GetLockingData(Subresource);
 
       // We do not need to wait for the resource in the event the
       // calling app promises not to overwrite data that is in use
       // or is reading. Remember! This will only trigger for MANAGED resources
       // that cannot get affected by GPU, therefore readonly is A-OK for NOT waiting.
       const bool usesStagingBuffer = pResource->DoesStagingBufferUploads(Subresource);
-      const bool skipWait = (scratch || managed || systemmem) && !needsReadback
-        && (usesStagingBuffer || readOnly);
+      const bool skipWait = !needsReadback && (((scratch || managed || systemmem) && (usesStagingBuffer || readOnly)) || alloced);
 
-      if (alloced && !needsReadback) {
-        std::memset(physSlice.mapPtr, 0, physSlice.length);
-      }
-      else if (!skipWait) {
+      if (!skipWait) {
+        const Rc<DxvkBuffer> mappedBuffer = pResource->GetBuffer(Subresource);
         if (unlikely(needsReadback) && pResource->GetImage() != nullptr) {
           Rc<DxvkImage> resourceImage = pResource->GetImage();
 
@@ -4364,8 +4364,7 @@ namespace dxvk {
       (!atiHack) ? formatInfo : nullptr,
       pBox);
 
-
-    uint8_t* data = reinterpret_cast<uint8_t*>(physSlice.mapPtr);
+    uint8_t* data = reinterpret_cast<uint8_t*>(mapPtr);
     data += offset;
     pLockedBox->pBits = data;
     return D3D_OK;
@@ -4451,7 +4450,6 @@ namespace dxvk {
 
     // Now that data has been written into the buffer,
     // we need to copy its contents into the image
-    const DxvkBufferSliceHandle srcSlice = pSrcTexture->GetMappedSlice(SrcSubresource);
 
     auto formatInfo  = imageFormatInfo(image->info().format);
     auto srcSubresource = pSrcTexture->GetSubresourceFromIndex(
@@ -4498,14 +4496,21 @@ namespace dxvk {
       VkDeviceSize rowAlignment = 1;
       DxvkBufferSlice copySrcSlice;
       if (pSrcTexture->DoesStagingBufferUploads(SrcSubresource)) {
+        const void* mapPtr = pSrcTexture->GetLockingData(SrcSubresource);
         VkDeviceSize dirtySize = extentBlockCount.width * extentBlockCount.height * extentBlockCount.depth * formatInfo->elementSize;
         D3D9BufferSlice slice = AllocTempBuffer<false>(dirtySize);
         copySrcSlice = slice.slice;
-        void* srcData = reinterpret_cast<uint8_t*>(srcSlice.mapPtr) + copySrcOffset;
-        util::packImageData(
-          slice.mapPtr, srcData, extentBlockCount, formatInfo->elementSize,
-          pitch, pitch * srcTexLevelExtentBlockCount.height);
+        if (mapPtr) {
+          const void* srcData = reinterpret_cast<const uint8_t*>(mapPtr) + copySrcOffset;
+          util::packImageData(
+            slice.mapPtr, srcData, extentBlockCount, formatInfo->elementSize,
+            pitch, pitch * srcTexLevelExtentBlockCount.height);
+        } else {
+          // The resource has not been mapped before.
+          std::memset(slice.mapPtr, 0, dirtySize);
+        }
       } else {
+        const DxvkBufferSliceHandle srcSlice = pSrcTexture->GetMappedSlice(SrcSubresource);
         copySrcSlice = DxvkBufferSlice(pSrcTexture->GetBuffer(SrcSubresource), copySrcOffset, srcSlice.length);
         // row/slice alignment can act as the pitch parameter
         rowAlignment = pitch;
@@ -4532,6 +4537,7 @@ namespace dxvk {
     }
     else {
       const DxvkFormatInfo* formatInfo = imageFormatInfo(pDestTexture->GetFormatMapping().FormatColor);
+      const void* mapPtr = pSrcTexture->GetLockingData(SrcSubresource);
 
       // Add more blocks for the other planes that we might have.
       // TODO: PLEASE CLEAN ME
@@ -4549,11 +4555,11 @@ namespace dxvk {
       }
 
       // the converter can not handle the 4 aligned pitch so we always repack into a staging buffer
-      D3D9BufferSlice slice = AllocTempBuffer<false>(srcSlice.length);
+      D3D9BufferSlice slice = AllocTempBuffer<false>(pSrcTexture->GetMipSize(SrcSubresource));
       VkDeviceSize pitch = align(srcTexLevelExtentBlockCount.width * formatInfo->elementSize, 4);
 
       util::packImageData(
-        slice.mapPtr, srcSlice.mapPtr, srcTexLevelExtentBlockCount, formatInfo->elementSize,
+        slice.mapPtr, mapPtr, srcTexLevelExtentBlockCount, formatInfo->elementSize,
         pitch, std::min(convertFormat.PlaneCount, 2u) * pitch * srcTexLevelExtentBlockCount.height);
 
       Flush();
@@ -5366,7 +5372,7 @@ namespace dxvk {
 
   void D3D9DeviceEx::UploadManagedTexture(D3D9CommonTexture* pResource) {
     for (uint32_t subresource = 0; subresource < pResource->CountSubresources(); subresource++) {
-      if (!pResource->NeedsUpload(subresource) || pResource->GetBuffer(subresource) == nullptr)
+      if (!pResource->NeedsUpload(subresource) || pResource->GetLockingData(subresource) == nullptr)
         continue;
 
       this->FlushImage(pResource, subresource);
