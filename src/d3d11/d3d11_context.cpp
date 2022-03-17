@@ -16,10 +16,10 @@ namespace dxvk {
           DxvkCsChunkFlags        CsFlags)
   : D3D11DeviceChild<ID3D11DeviceContext4>(pParent),
     m_contextExt(this),
-    m_annotation(this),
     m_multithread(this, false),
     m_device    (Device),
     m_staging   (Device, StagingBufferSize),
+    m_annotation(this),
     m_csFlags   (CsFlags),
     m_csChunk   (AllocCsChunk()),
     m_cmdData   (nullptr) {
@@ -55,7 +55,8 @@ namespace dxvk {
       return S_OK;
     }
     
-    if (riid == __uuidof(ID3DUserDefinedAnnotation)) {
+    if (riid == __uuidof(ID3DUserDefinedAnnotation)
+     || riid == __uuidof(IDXVKUserDefinedAnnotation)) {
       *ppvObject = ref(&m_annotation);
       return S_OK;
     }
