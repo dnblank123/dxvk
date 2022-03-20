@@ -18,6 +18,10 @@ namespace dxvk {
     { "d3d9.memoryTrackTest",             "True" },  
     { "d3d9.alphaTestWiggleRoom",         "True" },
     { "d3d9.tearFree",                    "False" },
+    { "d3d9.apitraceMode",                "True" },
+    { "d3d9.presentInterval",             "1" },
+    { "d3d9.numBackBuffers",              "3" },
+    { "d3d9.maxFrameLatency",             "1" },
     }} },
     { R"(\\DNLauncher\.exe$)", {{
     { "d3d9.shaderModel",            	     "1" },  
