@@ -22,6 +22,7 @@ namespace dxvk {
     { "d3d9.presentInterval",             "1" },
     { "d3d9.numBackBuffers",              "3" },
     { "d3d9.maxFrameLatency",             "1" },
+    { "d3d9.enableAsync",                 "True" },
     }} },
     { R"(\\DNLauncher\.exe$)", {{
     { "d3d9.shaderModel",            	     "1" },  
