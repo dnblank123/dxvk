@@ -70,6 +70,7 @@ namespace dxvk {
      * after creating the DXGI swap chain         */
     { R"(\\Frostpunk\.exe$)", {{
       { "dxgi.deferSurfaceCreation",        "True" },
+      { "d3d11.cachedDynamicResources",     "c" },
     }} },
     /* Nioh: See Frostpunk, apparently?           */
     { R"(\\nioh\.exe$)", {{
@@ -194,7 +195,7 @@ namespace dxvk {
       { "d3d9.deferSurfaceCreation",        "True" },
     }} },
     /* Just how many of these games are there?    */
-    { R"(\\Atelier_(Lulua|Lydie_and_Suelle|Ryza(_2)?)\.exe$)", {{
+    { R"(\\Atelier_(Lulua|Lydie_and_Suelle|Ryza(_2)|Sophie_2?)\.exe$)", {{
       { "d3d9.deferSurfaceCreation",        "True" },
     }} },
     /* ...                                        */
@@ -283,6 +284,7 @@ namespace dxvk {
       { "d3d11.ignoreGraphicsBarriers",     "True" },
       { "d3d11.relaxedBarriers",            "True" },
       { "dxgi.nvapiHack",                   "False" },
+      { "dxgi.maxFrameLatency",             "1"    },
     }} },
     /* AoE 2 DE - runs poorly for some users      */
     { R"(\\AoE2DE_s\.exe$)", {{
@@ -291,6 +293,14 @@ namespace dxvk {
     /* Total War: Warhammer III                   */
     { R"(\\Warhammer3\.exe$)", {{
       { "d3d11.maxDynamicImageBufferSize",  "4096" },
+    }} },
+    /* Assassin's Creed 3 and 4                   */
+    { R"(\\ac(3|4bf)[sm]p\.exe$)", {{
+      { "d3d11.cachedDynamicResources",     "a"    },
+    }} },
+    /* Stranger of Paradise - FF Origin           */
+    { R"(\\SOPFFO\.exe$)", {{
+      { "d3d9.deferSurfaceCreation",        "True" },
     }} },
 
     /**********************************************/
@@ -533,6 +543,10 @@ namespace dxvk {
     /* Resident Evil games                      */
     { R"(\\(rerev|rerev2|re0hd|bhd|re5dx9|BH6)\.exe$)", {{
       { "d3d9.allowDirectBufferMapping",                "False" },
+    }} },
+    /* Limbo                                    */
+    { R"(\\limbo\.exe$)", {{
+      { "d3d9.maxFrameRate",                "60" },
     }} },
   }};
 
