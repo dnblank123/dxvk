@@ -1,7 +1,7 @@
 #include <cstring>
 
 #include "spirv_module.h"
-#include <optional>
+
 
 namespace dxvk {
   
