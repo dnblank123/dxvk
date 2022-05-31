@@ -13,7 +13,7 @@ namespace dxvk {
     m_buffer = CreateBuffer();
 
     if (m_mapMode == D3D9_COMMON_BUFFER_MAP_MODE_BUFFER)
-      CreateStagingBuffer();
+      CreateStagingBuffer(false); // D3D9Initializer will clear the buffer.
     else if (m_mapMode == D3D9_COMMON_BUFFER_MAP_MODE_DIRECT)
       m_sliceHandle = m_buffer->getSliceHandle();
 
@@ -21,6 +21,17 @@ namespace dxvk {
       m_dirtyRange = D3D9Range(0, m_desc.Size);
   }
 
+  D3D9_COMMON_BUFFER_MAP_MODE D3D9CommonBuffer::DetermineMapMode(const D3D9Options *options) const {
+    if (m_desc.Pool == D3DPOOL_DEFAULT && (m_desc.Usage & (D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY)) && options->allowDirectBufferMapping)
+      return D3D9_COMMON_BUFFER_MAP_MODE_DIRECT;
+
+#ifdef D3D9_ALLOW_UNMAPPING
+    if (!(m_desc.Usage & D3DUSAGE_DYNAMIC))
+        return D3D9_COMMON_BUFFER_MAP_MODE_UNMAPPABLE;
+#endif
+
+    return D3D9_COMMON_BUFFER_MAP_MODE_BUFFER;
+  }
 
   HRESULT D3D9CommonBuffer::Lock(
           UINT   OffsetToLock,
@@ -112,9 +123,8 @@ namespace dxvk {
     return m_parent->GetDXVKDevice()->createBuffer(info, memoryFlags);
   }
 
-
-  bool D3D9CommonBuffer::CreateStagingBuffer() {
-    if (m_stagingBuffer != nullptr || GetMapMode() != D3D9_COMMON_BUFFER_MAP_MODE_BUFFER)
+  bool D3D9CommonBuffer::CreateStagingBuffer(bool Initialize) {
+    if (m_stagingBuffer != nullptr || m_mapMode == D3D9_COMMON_BUFFER_MAP_MODE_DIRECT)
       return false;
 
     DxvkBufferCreateInfo  info;
@@ -137,7 +147,44 @@ namespace dxvk {
 
     m_stagingBuffer = m_parent->GetDXVKDevice()->createBuffer(info, memoryFlags);
     m_sliceHandle = m_stagingBuffer->getSliceHandle();
+
+    if (Initialize) {
+      if (m_lockingData) {
+        m_lockingData.Map();
+        memcpy(m_sliceHandle.mapPtr, m_lockingData.Ptr(), m_desc.Size);
+        m_lockingData = { };
+      } else {
+        memset(m_sliceHandle.mapPtr, 0, m_desc.Size);
+      }
+    }
+
     return true;
+  }
+
+
+  bool D3D9CommonBuffer::AllocLockingData(bool Initialize) {
+    if (m_mapMode != D3D9_COMMON_BUFFER_MAP_MODE_UNMAPPABLE)
+      return CreateStagingBuffer(Initialize);
+
+    D3D9Memory& memory = m_lockingData;
+    if (likely(memory))
+      return false;
+
+    memory = m_parent->GetAllocator()->Alloc(m_desc.Size);
+    memory.Map();
+    if (Initialize) {
+      memset(memory.Ptr(), 0, m_desc.Size);
+    }
+    return true;
+  }
+
+  void* D3D9CommonBuffer::GetLockingData() {
+    if (unlikely(m_sliceHandle.mapPtr != nullptr || m_mapMode != D3D9_COMMON_BUFFER_MAP_MODE_UNMAPPABLE))
+      return m_sliceHandle.mapPtr;
+
+    D3D9Memory& memory = m_lockingData;
+    memory.Map();
+    return memory.Ptr();
   }
 
 }

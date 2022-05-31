@@ -1,6 +1,7 @@
 #include "d3d9_device.h"
 
 #include "d3d9_annotation.h"
+#include "d3d9_common_buffer.h"
 #include "d3d9_interface.h"
 #include "d3d9_swapchain.h"
 #include "d3d9_caps.h"
@@ -2675,8 +2676,9 @@ namespace dxvk {
         GetPixelShaderPermutation());
     }
 
-    if (dst->GetMapMode() == D3D9_COMMON_BUFFER_MAP_MODE_BUFFER) {
+    if (dst->GetMapMode() != D3D9_COMMON_BUFFER_MAP_MODE_DIRECT) {
       uint32_t copySize = VertexCount * decl->GetSize();
+      dst->CreateStagingBuffer(true);
 
       EmitCs([
         cSrcBuffer = dst->GetBuffer<D3D9_COMMON_BUFFER_TYPE_REAL>(),
@@ -4617,9 +4619,6 @@ namespace dxvk {
     if (desc.Usage & D3DUSAGE_DYNAMIC)
       Flags &= ~D3DLOCK_DONOTWAIT;
 
-
-    bool alloced = pResource->CreateStagingBuffer();
-
     // We only bounds check for MANAGED.
     // (TODO: Apparently this is meant to happen for DYNAMIC too but I am not sure
     //  how that works given it is meant to be a DIRECT access..?)
@@ -4635,15 +4634,17 @@ namespace dxvk {
     if ((desc.Pool == D3DPOOL_DEFAULT || !(Flags & D3DLOCK_NO_DIRTY_UPDATE)) && !(Flags & D3DLOCK_READONLY))
       pResource->DirtyRange().Conjoin(lockRange);
 
-    Rc<DxvkBuffer> mappingBuffer = pResource->GetBuffer<D3D9_COMMON_BUFFER_TYPE_MAPPING>();
+    void* mapPtr;
 
-    DxvkBufferSliceHandle physSlice;
-
-    if (Flags & D3DLOCK_DISCARD) {
+    if ((Flags & D3DLOCK_DISCARD) && !pResource->DoesStagingBufferUploads()) {
       // Allocate a new backing slice for the buffer and set
       // it as the 'new' mapped slice. This assumes that the
       // only way to invalidate a buffer is by mapping it.
-      physSlice = pResource->DiscardMapSlice();
+
+      pResource->CreateStagingBuffer(false);
+      DxvkBufferSliceHandle physSlice = pResource->DiscardMapSlice();
+      mapPtr = physSlice.mapPtr;
+      const Rc<DxvkBuffer> mappingBuffer = pResource->GetBuffer<D3D9_COMMON_BUFFER_TYPE_MAPPING>();
 
       EmitCs([
         cBuffer      = std::move(mappingBuffer),
@@ -4656,10 +4657,10 @@ namespace dxvk {
       pResource->GPUReadingRange().Clear();
     }
     else {
-      // Use map pointer from previous map operation. This
-      // way we don't have to synchronize with the CS thread
-      // if the map mode is D3DLOCK_NOOVERWRITE.
-      physSlice = pResource->GetMappedSlice();
+      const bool needsReadback = pResource->NeedsReadback();
+
+      const bool alloced = pResource->AllocLockingData(!needsReadback);
+      mapPtr = pResource->GetLockingData();
 
       // NOOVERWRITE promises that they will not write in a currently used area.
       // Therefore we can skip waiting for these two cases.
@@ -4667,17 +4668,14 @@ namespace dxvk {
 
       // If we are respecting the bounds ie. (MANAGED) we can test overlap
       // of our bounds, otherwise we just ignore this and go for it all the time.
-      const bool needsReadback = pResource->NeedsReadback();
       const bool readOnly = Flags & D3DLOCK_READONLY;
       const bool noOverlap = !pResource->GPUReadingRange().Overlaps(lockRange);
       const bool noOverwrite = Flags & D3DLOCK_NOOVERWRITE;
       const bool usesStagingBuffer = pResource->DoesStagingBufferUploads();
       const bool directMapping = pResource->GetMapMode() == D3D9_COMMON_BUFFER_MAP_MODE_DIRECT;
-      const bool skipWait = (!needsReadback && (usesStagingBuffer || readOnly || (noOverlap && !directMapping))) || noOverwrite;
-      if (alloced && !needsReadback) {
-        std::memset(physSlice.mapPtr, 0, physSlice.length);
-      }
-      else if (!skipWait) {
+      const bool skipWait = (!needsReadback && (alloced || usesStagingBuffer || readOnly || (noOverlap && !directMapping))) || noOverwrite;
+      if (!skipWait) {
+        const Rc<DxvkBuffer> mappingBuffer = pResource->GetBuffer<D3D9_COMMON_BUFFER_TYPE_MAPPING>();
         if (!(Flags & D3DLOCK_DONOTWAIT) && !WaitForResource(mappingBuffer, pResource->GetMappingBufferSequenceNumber(), D3DLOCK_DONOTWAIT))
           pResource->EnableStagingBufferUploads();
 
@@ -4689,7 +4687,7 @@ namespace dxvk {
       }
     }
 
-    uint8_t* data = reinterpret_cast<uint8_t*>(physSlice.mapPtr);
+    uint8_t* data = reinterpret_cast<uint8_t*>(mapPtr);
     // The offset/size is not clamped to or affected by the desc size.
     data += OffsetToLock;
 
@@ -4712,8 +4710,8 @@ namespace dxvk {
   HRESULT D3D9DeviceEx::FlushBuffer(
         D3D9CommonBuffer*       pResource) {
     auto dstBuffer = pResource->GetBufferSlice<D3D9_COMMON_BUFFER_TYPE_REAL>();
-    auto srcSlice = pResource->GetMappedSlice();
-    if (unlikely(srcSlice.mapPtr == nullptr)) {
+    void* mapPtr = pResource->GetLockingData();
+    if (unlikely(mapPtr == nullptr)) {
       return D3D_OK;
     }
 
@@ -4723,7 +4721,7 @@ namespace dxvk {
     if (pResource->DoesStagingBufferUploads()) {
       D3D9BufferSlice slice = AllocTempBuffer<false>(range.max - range.min);
       copySrcSlice = slice.slice;
-      void* srcData = reinterpret_cast<uint8_t*>(srcSlice.mapPtr) + range.min;
+      void* srcData = reinterpret_cast<uint8_t*>(mapPtr) + range.min;
       memcpy(slice.mapPtr, srcData, range.max - range.min);
     } else {
       copySrcSlice = DxvkBufferSlice(pResource->GetBuffer<D3D9_COMMON_BUFFER_TYPE_MAPPING>(), range.min, range.max - range.min);
@@ -4758,7 +4756,7 @@ namespace dxvk {
     if (pResource->DecrementLockCount() != 0)
       return D3D_OK;
 
-    if (pResource->GetMapMode() != D3D9_COMMON_BUFFER_MAP_MODE_BUFFER)
+    if (pResource->GetMapMode() == D3D9_COMMON_BUFFER_MAP_MODE_DIRECT)
       return D3D_OK;
 
     if (pResource->DirtyRange().IsDegenerate())
