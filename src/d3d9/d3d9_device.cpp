@@ -1,6 +1,7 @@
 #include "d3d9_device.h"
 
 #include "d3d9_annotation.h"
+#include "d3d9_common_buffer.h"
 #include "d3d9_interface.h"
 #include "d3d9_swapchain.h"
 #include "d3d9_caps.h"
@@ -39,18 +40,19 @@ namespace dxvk {
           HWND                   hFocusWindow,
           DWORD                  BehaviorFlags,
           Rc<DxvkDevice>         dxvkDevice)
-    : m_parent         ( pParent )
-    , m_deviceType     ( DeviceType )
-    , m_window         ( hFocusWindow )
-    , m_behaviorFlags  ( BehaviorFlags )
-    , m_adapter        ( pAdapter )
-    , m_dxvkDevice     ( dxvkDevice )
-    , m_shaderModules  ( new D3D9ShaderModuleSet )
-    , m_d3d9Options    ( dxvkDevice, pParent->GetInstance()->config() )
-    , m_multithread    ( BehaviorFlags & D3DCREATE_MULTITHREADED )
-    , m_isSWVP         ( (BehaviorFlags & D3DCREATE_SOFTWARE_VERTEXPROCESSING) ? true : false )
-    , m_csThread       ( dxvkDevice, dxvkDevice->createContext() )
-    , m_csChunk        ( AllocCsChunk() ) {
+    : m_parent          ( pParent )
+    , m_deviceType      ( DeviceType )
+    , m_window          ( hFocusWindow )
+    , m_behaviorFlags   ( BehaviorFlags )
+    , m_adapter         ( pAdapter )
+    , m_dxvkDevice      ( dxvkDevice )
+    , m_memoryAllocator ( )
+    , m_shaderModules   ( new D3D9ShaderModuleSet )
+    , m_d3d9Options     ( dxvkDevice, pParent->GetInstance()->config() )
+    , m_multithread     ( BehaviorFlags & D3DCREATE_MULTITHREADED )
+    , m_isSWVP          ( (BehaviorFlags & D3DCREATE_SOFTWARE_VERTEXPROCESSING) ? true : false )
+    , m_csThread        ( dxvkDevice, dxvkDevice->createContext() )
+    , m_csChunk         ( AllocCsChunk() ) {
     // If we can SWVP, then we use an extended constant set
     // as SWVP has many more slots available than HWVP.
     bool canSWVP = CanSWVP();
@@ -869,6 +871,7 @@ namespace dxvk {
     if (dstTexInfo->Desc()->Pool == D3DPOOL_DEFAULT)
       return this->StretchRect(pRenderTarget, nullptr, pDestSurface, nullptr, D3DTEXF_NONE);
 
+    dstTexInfo->CreateBufferSubresource(dst->GetSubresource());
     Rc<DxvkBuffer> dstBuffer = dstTexInfo->GetBuffer(dst->GetSubresource());
 
     Rc<DxvkImage>  srcImage                 = srcTexInfo->GetImage();
@@ -2673,6 +2676,7 @@ namespace dxvk {
 
     if (dst->GetMapMode() == D3D9_COMMON_BUFFER_MAP_MODE_BUFFER) {
       uint32_t copySize = VertexCount * decl->GetSize();
+      dst->CreateStagingBuffer();
 
       EmitCs([
         cSrcBuffer = dst->GetBuffer<D3D9_COMMON_BUFFER_TYPE_REAL>(),
@@ -3967,6 +3971,7 @@ namespace dxvk {
   template<bool UpBuffer>
   D3D9BufferSlice D3D9DeviceEx::AllocTempBuffer(VkDeviceSize size) {
     constexpr VkDeviceSize DefaultSize = 1 << 20;
+    constexpr uint32_t MaxRetainedBufferCount = 16;
 
     VkMemoryPropertyFlags memoryFlags
       = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
@@ -3976,9 +3981,13 @@ namespace dxvk {
       memoryFlags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
     }
 
+    uint32_t backingCount = 0;
     D3D9BufferSlice& currentSlice = UpBuffer ? m_upBuffer : m_managedUploadBuffer;
+    if (likely(currentSlice.slice.defined())) {
+      backingCount = currentSlice.slice.buffer()->backingBufferCount();
+    }
 
-    if (size <= DefaultSize) {
+    if (size <= DefaultSize && backingCount < MaxRetainedBufferCount) {
       if (unlikely(!currentSlice.slice.defined())) {
         DxvkBufferCreateInfo info;
         info.size   = DefaultSize;
@@ -4145,10 +4154,6 @@ namespace dxvk {
 
     auto& desc = *(pResource->Desc());
 
-    bool alloced = pResource->CreateBufferSubresource(Subresource);
-
-    const Rc<DxvkBuffer> mappedBuffer = pResource->GetBuffer(Subresource);
-
     auto& formatMapping = pResource->GetFormatMapping();
 
     const DxvkFormatInfo* formatInfo = formatMapping.IsValid()
@@ -4203,12 +4208,15 @@ namespace dxvk {
     bool needsReadback = pResource->NeedsReachback(Subresource) || renderable;
     pResource->SetNeedsReadback(Subresource, false);
 
-    DxvkBufferSliceHandle physSlice;
+    void* mapPtr;
 
-    if (Flags & D3DLOCK_DISCARD) {
+    if ((Flags & D3DLOCK_DISCARD) && !pResource->DoesStagingBufferUploads(Subresource)) {
       // We do not have to preserve the contents of the
       // buffer if the entire image gets discarded.
-      physSlice = pResource->DiscardMapSlice(Subresource);
+      pResource->CreateBufferSubresource(Subresource);
+      DxvkBufferSliceHandle physSlice = pResource->DiscardMapSlice(Subresource);
+      mapPtr = physSlice.mapPtr;
+      const Rc<DxvkBuffer> mappedBuffer = pResource->GetBuffer(Subresource);
 
       EmitCs([
         cImageBuffer = std::move(mappedBuffer),
@@ -4217,7 +4225,8 @@ namespace dxvk {
         ctx->invalidateBuffer(cImageBuffer, cBufferSlice);
       });
     } else {
-      physSlice = pResource->GetMappedSlice(Subresource);
+      const bool alloced = pResource->AllocLockingData(Subresource);
+      mapPtr = MapTexture(pResource, Subresource);
 
       // We do not need to wait for the resource in the event the
       // calling app promises not to overwrite data that is in use
@@ -4228,9 +4237,11 @@ namespace dxvk {
         && (usesStagingBuffer || readOnly);
 
       if (alloced && !needsReadback) {
-        std::memset(physSlice.mapPtr, 0, physSlice.length);
+        VkDeviceSize size = pResource->GetMipSize(Subresource);
+        std::memset(mapPtr, 0, size);
       }
       else if (!skipWait) {
+        const Rc<DxvkBuffer> mappedBuffer = pResource->GetBuffer(Subresource);
         if (unlikely(needsReadback) && pResource->GetImage() != nullptr) {
           Rc<DxvkImage> resourceImage = pResource->GetImage();
 
@@ -4327,8 +4338,7 @@ namespace dxvk {
     pResource->SetLocked(Subresource, true);
 
     const bool noDirtyUpdate = Flags & D3DLOCK_NO_DIRTY_UPDATE;
-    if (likely((pResource->IsManaged() && m_d3d9Options.evictManagedOnUnlock)
-      || ((desc.Pool == D3DPOOL_DEFAULT || !noDirtyUpdate) && !readOnly))) {
+    if ((desc.Pool == D3DPOOL_DEFAULT || !noDirtyUpdate) && !readOnly) {
       if (pBox && MipLevel != 0) {
         D3DBOX scaledBox = *pBox;
         scaledBox.Left   <<= MipLevel;
@@ -4343,7 +4353,7 @@ namespace dxvk {
       }
     }
 
-    if (managed && !m_d3d9Options.evictManagedOnUnlock && !readOnly) {
+    if (managed && !readOnly) {
       pResource->SetNeedsUpload(Subresource, true);
 
       for (uint32_t i : bit::BitMask(m_activeTextures)) {
@@ -4364,8 +4374,7 @@ namespace dxvk {
       (!atiHack) ? formatInfo : nullptr,
       pBox);
 
-
-    uint8_t* data = reinterpret_cast<uint8_t*>(physSlice.mapPtr);
+    uint8_t* data = reinterpret_cast<uint8_t*>(mapPtr);
     data += offset;
     pLockedBox->pBits = data;
     return D3D_OK;
@@ -4391,7 +4400,7 @@ namespace dxvk {
     const D3DBOX& box = pResource->GetDirtyBox(Face);
     bool shouldFlush  = pResource->GetMapMode() == D3D9_COMMON_TEXTURE_MAP_MODE_BACKED;
          shouldFlush &= box.Left < box.Right && box.Top < box.Bottom && box.Front < box.Back;
-         shouldFlush &= !pResource->IsManaged() || m_d3d9Options.evictManagedOnUnlock;
+         shouldFlush &= !pResource->IsManaged();
 
     if (shouldFlush) {
         this->FlushImage(pResource, Subresource);
@@ -4403,7 +4412,7 @@ namespace dxvk {
     // and we aren't managed (for sysmem copy.)
     bool shouldToss  = pResource->GetMapMode() == D3D9_COMMON_TEXTURE_MAP_MODE_BACKED;
          shouldToss &= !pResource->IsDynamic();
-         shouldToss &= !pResource->IsManaged() || m_d3d9Options.evictManagedOnUnlock;
+         shouldToss &= !pResource->IsManaged();
 
     if (shouldToss) {
       pResource->DestroyBufferSubresource(Subresource);
@@ -4451,7 +4460,6 @@ namespace dxvk {
 
     // Now that data has been written into the buffer,
     // we need to copy its contents into the image
-    const DxvkBufferSliceHandle srcSlice = pSrcTexture->GetMappedSlice(SrcSubresource);
 
     auto formatInfo  = imageFormatInfo(image->info().format);
     auto srcSubresource = pSrcTexture->GetSubresourceFromIndex(
@@ -4498,14 +4506,16 @@ namespace dxvk {
       VkDeviceSize rowAlignment = 1;
       DxvkBufferSlice copySrcSlice;
       if (pSrcTexture->DoesStagingBufferUploads(SrcSubresource)) {
+        const void* mapPtr = MapTexture(pSrcTexture, SrcSubresource);
         VkDeviceSize dirtySize = extentBlockCount.width * extentBlockCount.height * extentBlockCount.depth * formatInfo->elementSize;
         D3D9BufferSlice slice = AllocTempBuffer<false>(dirtySize);
         copySrcSlice = slice.slice;
-        void* srcData = reinterpret_cast<uint8_t*>(srcSlice.mapPtr) + copySrcOffset;
+        const void* srcData = reinterpret_cast<const uint8_t*>(mapPtr) + copySrcOffset;
         util::packImageData(
           slice.mapPtr, srcData, extentBlockCount, formatInfo->elementSize,
           pitch, pitch * srcTexLevelExtentBlockCount.height);
       } else {
+        const DxvkBufferSliceHandle srcSlice = pSrcTexture->GetMappedSlice(SrcSubresource);
         copySrcSlice = DxvkBufferSlice(pSrcTexture->GetBuffer(SrcSubresource), copySrcOffset, srcSlice.length);
         // row/slice alignment can act as the pitch parameter
         rowAlignment = pitch;
@@ -4532,6 +4542,7 @@ namespace dxvk {
     }
     else {
       const DxvkFormatInfo* formatInfo = imageFormatInfo(pDestTexture->GetFormatMapping().FormatColor);
+      const DxvkBufferSliceHandle srcSlice = pSrcTexture->GetMappedSlice(SrcSubresource);
 
       // Add more blocks for the other planes that we might have.
       // TODO: PLEASE CLEAN ME
@@ -4626,15 +4637,17 @@ namespace dxvk {
     if ((desc.Pool == D3DPOOL_DEFAULT || !(Flags & D3DLOCK_NO_DIRTY_UPDATE)) && !(Flags & D3DLOCK_READONLY))
       pResource->DirtyRange().Conjoin(lockRange);
 
-    Rc<DxvkBuffer> mappingBuffer = pResource->GetBuffer<D3D9_COMMON_BUFFER_TYPE_MAPPING>();
+    void* mapPtr;
 
-    DxvkBufferSliceHandle physSlice;
-
-    if (Flags & D3DLOCK_DISCARD) {
+    if ((Flags & D3DLOCK_DISCARD) && !pResource->DoesStagingBufferUploads()) {
       // Allocate a new backing slice for the buffer and set
       // it as the 'new' mapped slice. This assumes that the
       // only way to invalidate a buffer is by mapping it.
-      physSlice = pResource->DiscardMapSlice();
+
+      pResource->CreateStagingBuffer();
+      DxvkBufferSliceHandle physSlice = pResource->DiscardMapSlice();
+      mapPtr = physSlice.mapPtr;
+      const Rc<DxvkBuffer> mappingBuffer = pResource->GetBuffer<D3D9_COMMON_BUFFER_TYPE_MAPPING>();
 
       EmitCs([
         cBuffer      = std::move(mappingBuffer),
@@ -4647,10 +4660,8 @@ namespace dxvk {
       pResource->GPUReadingRange().Clear();
     }
     else {
-      // Use map pointer from previous map operation. This
-      // way we don't have to synchronize with the CS thread
-      // if the map mode is D3DLOCK_NOOVERWRITE.
-      physSlice = pResource->GetMappedSlice();
+      const bool alloced = pResource->AllocLockingData();
+      mapPtr = MapBuffer(pResource);
 
       // NOOVERWRITE promises that they will not write in a currently used area.
       // Therefore we can skip waiting for these two cases.
@@ -4665,11 +4676,13 @@ namespace dxvk {
       const bool usesStagingBuffer = pResource->DoesStagingBufferUploads();
       const bool directMapping = pResource->GetMapMode() == D3D9_COMMON_BUFFER_MAP_MODE_DIRECT;
       const bool skipWait = (!needsReadback && (usesStagingBuffer || readOnly || (noOverlap && !directMapping))) || noOverwrite;
-      if (!skipWait) {
-        if (unlikely(needsReadback)) {
-          Logger::warn("Buffer readback is unimplemented.");
-          // Remember to update the sequence number when implementing buffer readback.
-        } else if (!(Flags & D3DLOCK_DONOTWAIT) && !WaitForResource(mappingBuffer, pResource->GetMappingBufferSequenceNumber(), D3DLOCK_DONOTWAIT))
+      if (alloced && !needsReadback) {
+        VkDeviceSize size = pResource->Desc()->Size;
+        std::memset(mapPtr, 0, size);
+      }
+      else if (!skipWait) {
+        const Rc<DxvkBuffer> mappingBuffer = pResource->GetBuffer<D3D9_COMMON_BUFFER_TYPE_MAPPING>();
+        if (!(Flags & D3DLOCK_DONOTWAIT) && !WaitForResource(mappingBuffer, pResource->GetMappingBufferSequenceNumber(), D3DLOCK_DONOTWAIT))
           pResource->EnableStagingBufferUploads();
 
         if (!WaitForResource(mappingBuffer, pResource->GetMappingBufferSequenceNumber(), Flags))
@@ -4680,7 +4693,7 @@ namespace dxvk {
       }
     }
 
-    uint8_t* data = reinterpret_cast<uint8_t*>(physSlice.mapPtr);
+    uint8_t* data = reinterpret_cast<uint8_t*>(mapPtr);
     // The offset/size is not clamped to or affected by the desc size.
     data += OffsetToLock;
 
@@ -4703,7 +4716,10 @@ namespace dxvk {
   HRESULT D3D9DeviceEx::FlushBuffer(
         D3D9CommonBuffer*       pResource) {
     auto dstBuffer = pResource->GetBufferSlice<D3D9_COMMON_BUFFER_TYPE_REAL>();
-    auto srcSlice = pResource->GetMappedSlice();
+    void* mapPtr = MapBuffer(pResource);
+    if (unlikely(mapPtr == nullptr)) {
+      return D3D_OK;
+    }
 
     D3D9Range& range = pResource->DirtyRange();
 
@@ -4711,7 +4727,7 @@ namespace dxvk {
     if (pResource->DoesStagingBufferUploads()) {
       D3D9BufferSlice slice = AllocTempBuffer<false>(range.max - range.min);
       copySrcSlice = slice.slice;
-      void* srcData = reinterpret_cast<uint8_t*>(srcSlice.mapPtr) + range.min;
+      void* srcData = reinterpret_cast<uint8_t*>(mapPtr) + range.min;
       memcpy(slice.mapPtr, srcData, range.max - range.min);
     } else {
       copySrcSlice = DxvkBufferSlice(pResource->GetBuffer<D3D9_COMMON_BUFFER_TYPE_MAPPING>(), range.min, range.max - range.min);
@@ -5356,7 +5372,7 @@ namespace dxvk {
 
   void D3D9DeviceEx::UploadManagedTexture(D3D9CommonTexture* pResource) {
     for (uint32_t subresource = 0; subresource < pResource->CountSubresources(); subresource++) {
-      if (!pResource->NeedsUpload(subresource) || pResource->GetBuffer(subresource) == nullptr)
+      if (!pResource->NeedsUpload(subresource) || pResource->GetLockingData(subresource) == nullptr)
         continue;
 
       this->FlushImage(pResource, subresource);
@@ -7412,6 +7428,94 @@ namespace dxvk {
     // immediately after a flush, we need to use the sequence number
     // of the previously submitted chunk to prevent deadlocks.
     return m_csChunk->empty() ? m_csSeqNum : m_csSeqNum + 1;
+  }
+
+
+  void* D3D9DeviceEx::MapTexture(D3D9CommonTexture* pTexture, UINT Subresource) {
+    // Will only be called inside the device lock
+    void *ptr = pTexture->GetLockingData(Subresource);
+
+#ifdef D3D9_ALLOW_UNMAPPING
+    if (pTexture->GetMapMode() == D3D9_COMMON_TEXTURE_MAP_MODE_UNMAPPABLE) {
+      m_mappedTextures.insert(pTexture);
+      pTexture->SetMappingFrame(m_frameCounter);
+    }
+#endif
+
+    return ptr;
+  }
+
+
+  void* D3D9DeviceEx::MapBuffer(D3D9CommonBuffer* pBuffer) {
+    // Will only be called inside the device lock
+    void *ptr = pBuffer->GetLockingData();
+
+#ifdef D3D9_ALLOW_UNMAPPING
+    if (pBuffer->GetMapMode() == D3D9_COMMON_BUFFER_MAP_MODE_UNMAPPABLE) {
+      m_mappedBuffers.insert(pBuffer);
+      pBuffer->SetMappingFrame(m_frameCounter);
+    }
+#endif
+
+    return ptr;
+  }
+
+  void D3D9DeviceEx::TouchMappedTexture(D3D9CommonTexture* pTexture) {
+#ifdef D3D9_ALLOW_UNMAPPING
+    if (pTexture->GetMapMode() != D3D9_COMMON_TEXTURE_MAP_MODE_UNMAPPABLE)
+      return;
+
+    D3D9DeviceLock lock = LockDevice();
+    pTexture->SetMappingFrame(m_frameCounter);
+#endif
+  }
+
+  void D3D9DeviceEx::RemoveMappedTexture(D3D9CommonTexture* pTexture) {
+#ifdef D3D9_ALLOW_UNMAPPING
+    if (pTexture->GetMapMode() != D3D9_COMMON_TEXTURE_MAP_MODE_UNMAPPABLE)
+      return;
+
+    D3D9DeviceLock lock = LockDevice();
+    m_mappedTextures.erase(pTexture);
+#endif
+  }
+
+  void D3D9DeviceEx::RemoveMappedBuffer(D3D9CommonBuffer* pBuffer) {
+#ifdef D3D9_ALLOW_UNMAPPING
+    if (pBuffer->GetMapMode() != D3D9_COMMON_BUFFER_MAP_MODE_UNMAPPABLE)
+      return;
+
+    D3D9DeviceLock lock = LockDevice();
+    m_mappedBuffers.erase(pBuffer);
+#endif
+  }
+
+  void D3D9DeviceEx::UnmapResources() {
+    // Will only be called inside the device lock
+#ifdef D3D9_ALLOW_UNMAPPING
+    const bool force = m_memoryAllocator.MappedMemory() > 512 << 20;
+    for (auto iter = m_mappedTextures.begin(); iter != m_mappedTextures.end();) {
+      const bool mappingBufferUnused = (m_frameCounter - (*iter)->GetMappingFrame() > uint32_t(m_d3d9Options.textureUnmapDelay) || force) && !(*iter)->IsAnySubresourceLocked();
+      if (!mappingBufferUnused) {
+         iter++;
+        continue;
+      }
+
+      (*iter)->UnmapLockingData();
+      iter = m_mappedTextures.erase(iter);
+    }
+
+    for (auto iter = m_mappedBuffers.begin(); iter != m_mappedBuffers.end();) {
+      const bool mappingBufferUnused = (m_frameCounter - (*iter)->GetMappingFrame() > uint32_t(m_d3d9Options.bufferUnmapDelay) || force) && (*iter)->GetLockCount() == 0;
+      if (!mappingBufferUnused) {
+         iter++;
+        continue;
+      }
+
+      (*iter)->UnmapLockingData();
+      iter = m_mappedBuffers.erase(iter);
+    }
+#endif
   }
 
 }

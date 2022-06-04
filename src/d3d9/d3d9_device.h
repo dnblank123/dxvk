@@ -9,6 +9,7 @@
 #include "d3d9_multithread.h"
 #include "d3d9_adapter.h"
 #include "d3d9_constant_set.h"
+#include "d3d9_mem.h"
 
 #include "d3d9_state.h"
 
@@ -25,6 +26,7 @@
 
 #include "d3d9_shader_permutations.h"
 
+#include <unordered_set>
 #include <vector>
 #include <type_traits>
 #include <unordered_map>
@@ -928,6 +930,22 @@ namespace dxvk {
       return m_samplerCount.load();
     }
 
+    D3D9MemoryAllocator* GetAllocator() {
+      return &m_memoryAllocator;
+    }
+
+    void BumpFrame() {
+      m_frameCounter++;
+      UnmapResources();
+    }
+
+    void* MapTexture(D3D9CommonTexture* pTexture, UINT Subresource);
+    void TouchMappedTexture(D3D9CommonTexture* pTexture);
+    void RemoveMappedTexture(D3D9CommonTexture* pTexture);
+
+    void* MapBuffer(D3D9CommonBuffer* pBuffer);
+    void RemoveMappedBuffer(D3D9CommonBuffer* pBuffer);
+
   private:
 
     DxvkCsChunkRef AllocCsChunk() {
@@ -1139,6 +1157,8 @@ namespace dxvk {
       D3D9CommonTexture* pResource,
       UINT Subresource);
 
+    void UnmapResources();
+
     uint64_t GetCurrentSequenceNumber();
 
     Com<D3D9InterfaceEx>            m_parent;
@@ -1149,6 +1169,8 @@ namespace dxvk {
 
     D3D9Adapter*                    m_adapter;
     Rc<DxvkDevice>                  m_dxvkDevice;
+
+    D3D9MemoryAllocator             m_memoryAllocator;
 
     uint32_t                        m_frameLatency = DefaultFrameLatency;
 
@@ -1272,6 +1294,13 @@ namespace dxvk {
     std::atomic<int32_t>            m_samplerCount    = { 0 };
 
     Direct3DState9                  m_state;
+
+    uint64_t                        m_frameCounter = 0;
+
+#ifdef D3D9_ALLOW_UNMAPPING
+    std::unordered_set<D3D9CommonTexture*> m_mappedTextures;
+    std::unordered_set<D3D9CommonBuffer*> m_mappedBuffers;
+#endif
 
   };
 

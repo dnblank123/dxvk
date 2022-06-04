@@ -252,6 +252,8 @@ namespace dxvk {
           DWORD    dwFlags) {
     D3D9DeviceLock lock = m_parent->LockDevice();
 
+    m_parent->BumpFrame();
+
     uint32_t presentInterval = m_presentParams.PresentationInterval;
 
     // This is not true directly in d3d9 to to timing differences that don't matter for us.
@@ -336,6 +338,7 @@ namespace dxvk {
     if (unlikely(dstTexInfo->Desc()->Pool != D3DPOOL_SYSTEMMEM))
       return D3DERR_INVALIDCALL;
 
+    dstTexInfo->CreateBufferSubresource(dst->GetSubresource());
     Rc<DxvkBuffer> dstBuffer = dstTexInfo->GetBuffer(dst->GetSubresource());
     Rc<DxvkImage>  srcImage  = srcTexInfo->GetImage();
 
@@ -1075,6 +1078,7 @@ namespace dxvk {
     if (m_hud != nullptr) {
       m_hud->addItem<hud::HudClientApiItem>("api", 1, GetApiName());
       m_hud->addItem<hud::HudSamplerCount>("samplers", -1, m_parent);
+      m_hud->addItem<hud::HudManagedMemory>("memory", -1, m_parent);
     }
   }
 
