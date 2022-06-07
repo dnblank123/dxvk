@@ -202,7 +202,7 @@ namespace dxvk {
 
     for (uint32_t i = 0; i < numWorkers; i++) {
       m_workerThreads.emplace_back([this] () { workerFunc(); });
-      m_workerThreads[i].set_priority(ThreadPriority::Highest);
+      m_workerThreads[i].set_priority(ThreadPriority::Lowest);
     }
     
     m_writerThread = dxvk::thread([this] () { writerFunc(); });
