@@ -166,20 +166,21 @@ namespace dxvk {
   }
 
 
-  bool D3D9CommonBuffer::AllocLockingData(bool Initialize) {
-    if (m_mapMode != D3D9_COMMON_BUFFER_MAP_MODE_UNMAPPABLE)
-      return CreateStagingBuffer(Initialize);
+  void D3D9CommonBuffer::AllocLockingData(bool Initialize) {
+    if (m_mapMode != D3D9_COMMON_BUFFER_MAP_MODE_UNMAPPABLE) {
+      CreateStagingBuffer(Initialize);
+      return;
+    }
 
     D3D9Memory& memory = m_lockingData;
     if (likely(memory))
-      return false;
+      return;
 
     memory = m_parent->GetAllocator()->Alloc(m_desc.Size);
     memory.Map();
     if (Initialize) {
       memset(memory.Ptr(), 0, m_desc.Size);
     }
-    return true;
   }
 
   void* D3D9CommonBuffer::GetLockingData() {

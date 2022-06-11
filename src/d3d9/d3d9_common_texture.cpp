@@ -168,21 +168,21 @@ namespace dxvk {
     return D3D_OK;
   }
 
-  bool D3D9CommonTexture::AllocLockingData(UINT Subresource, bool Initialize) {
+  void D3D9CommonTexture::AllocLockingData(UINT Subresource, bool Initialize) {
     if (m_mapMode != D3D9_COMMON_TEXTURE_MAP_MODE_UNMAPPABLE) {
-      return CreateBufferSubresource(Subresource, Initialize);
+      CreateBufferSubresource(Subresource, Initialize);
+      return;
     }
 
     D3D9Memory& memory = m_lockingData[Subresource];
     if (likely(memory))
-      return false;
+      return;
 
     memory = m_device->GetAllocator()->Alloc(GetMipSize(Subresource));
     memory.Map();
     if (Initialize) {
       memset(memory.Ptr(), 0, GetMipSize(Subresource));
     }
-    return true;
   }
 
   void* D3D9CommonTexture::GetLockingData(UINT Subresource) {
