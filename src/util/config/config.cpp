@@ -339,7 +339,7 @@ namespace dxvk {
     }} },
     /* Sonic Adventure 2                          */
     { R"(\\Sonic Adventure 2\\(launcher|sonic2app)\.exe$)", {{
-      { "d3d9.floatEmulation",              "False" },
+      { "d3d9.floatEmulation",              "Strict" },
     }} },
     /* The Sims 2,
        Body Shop,
@@ -578,6 +578,14 @@ namespace dxvk {
        "Radeon" in gpu description also works   */
     { R"(\\eoa\.exe$)", {{
       { "d3d9.customVendorId",              "10de" },
+    }} },
+    /* Supreme Commander & Forged Alliance Forever */
+    { R"(\\(SupremeCommander|ForgedAlliance)\.exe$)", {{
+      { "d3d9.floatEmulation",            "Strict" },
+    }} },
+    /* Star Wars The Old Republic */
+    { R"(\\swtor\.exe$)", {{
+      { "d3d9.forceSamplerTypeSpecConstants", "True" },
     }} },
   }};
 
