@@ -3,7 +3,7 @@
 
 #include "../util/thread.h"
 
-#if defined(_WIN32) && !defined(_WIN64)
+#if !defined(_WIN32) && defined(_WIN64)
   #define D3D9_ALLOW_UNMAPPING
 #endif
 
