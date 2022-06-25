@@ -22,16 +22,6 @@ namespace dxvk {
     { R"(\\DNLauncher\.exe$)", {{
     { "d3d9.shaderModel",            	     "1" },  
     }} },
-     /* League of Legends*/ 
-    { R"(\\League of Legends\.exe$)", {{
-    { "d3d11.maxTessFactor",              "8" },
-    { "dxgi.maxFrameLatency",             "4" },
-    { "d3d11.relaxedBarriers",            "True" },
-    { "d3d11.ignoreGraphicsBarriers",     "True" },
-    { "dxgi.maxFrameLatency",             "1" },
-    { "dxgi.tearFree",                    "False" },
-    { "dxgi.numBackBuffers",              "1" },
-    }} },
     /* Assassin's Creed Syndicate: amdags issues  */
     { R"(\\ACS\.exe$)", {{
       { "dxgi.customVendorId",              "10de" },
