@@ -8,7 +8,7 @@
 #endif
 
 #ifdef D3D9_ALLOW_UNMAPPING
-  #define WIN32_LEAN_AND_MEAN
+  #define WIN64_LEAN_AND_MEAN
   #include <winbase.h>
 #endif
 
