@@ -329,11 +329,11 @@ namespace dxvk {
     SpirvCodeBuffer vsCode(d3d11_video_blit_vert);
     SpirvCodeBuffer fsCode(d3d11_video_blit_frag);
 
-    const std::array<DxvkResourceSlot, 4> fsResourceSlots = {{
-      { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC               },
-      { 1, VK_DESCRIPTOR_TYPE_SAMPLER                              },
-      { 2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_IMAGE_VIEW_TYPE_2D },
-      { 3, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_IMAGE_VIEW_TYPE_2D },
+    const std::array<DxvkBindingInfo, 4> fsBindings = {{
+      { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0, VK_IMAGE_VIEW_TYPE_MAX_ENUM, 0, VK_ACCESS_UNIFORM_READ_BIT },
+      { VK_DESCRIPTOR_TYPE_SAMPLER,        1, VK_IMAGE_VIEW_TYPE_MAX_ENUM, 0, 0 },
+      { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,  2, VK_IMAGE_VIEW_TYPE_2D,       0, VK_ACCESS_SHADER_READ_BIT },
+      { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,  3, VK_IMAGE_VIEW_TYPE_2D,       0, VK_ACCESS_SHADER_READ_BIT },
     }};
 
     DxvkShaderCreateInfo vsInfo;
@@ -343,8 +343,8 @@ namespace dxvk {
 
     DxvkShaderCreateInfo fsInfo;
     fsInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    fsInfo.resourceSlotCount = fsResourceSlots.size();
-    fsInfo.resourceSlots = fsResourceSlots.data();
+    fsInfo.bindingCount = fsBindings.size();
+    fsInfo.bindings = fsBindings.data();
     fsInfo.inputMask = 0x1;
     fsInfo.outputMask = 0x1;
     m_fs = new DxvkShader(fsInfo, std::move(fsCode));
@@ -1199,7 +1199,7 @@ namespace dxvk {
       ctx->bindRenderTargets(rt);
       ctx->bindShader(VK_SHADER_STAGE_VERTEX_BIT, m_vs);
       ctx->bindShader(VK_SHADER_STAGE_FRAGMENT_BIT, m_fs);
-      ctx->bindResourceBuffer(0, DxvkBufferSlice(m_ubo));
+      ctx->bindResourceBuffer(VK_SHADER_STAGE_FRAGMENT_BIT, 0, DxvkBufferSlice(m_ubo));
 
       DxvkInputAssemblyState iaState;
       iaState.primitiveTopology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -1292,10 +1292,10 @@ namespace dxvk {
 
       ctx->invalidateBuffer(m_ubo, uboSlice);
       ctx->setViewports(1, &viewport, &scissor);
-      ctx->bindResourceSampler(1, m_sampler);
+      ctx->bindResourceSampler(VK_SHADER_STAGE_FRAGMENT_BIT, 1, m_sampler);
 
       for (uint32_t i = 0; i < cViews.size(); i++)
-        ctx->bindResourceView(2 + i, cViews[i], nullptr);
+        ctx->bindResourceView(VK_SHADER_STAGE_FRAGMENT_BIT, 2 + i, cViews[i], nullptr);
 
       ctx->draw(3, 1, 0, 0);
     });

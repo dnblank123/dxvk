@@ -7,8 +7,7 @@ namespace dxvk {
   : m_device        (device),
     m_vkd           (device->vkd()),
     m_vki           (device->instance()->vki()),
-    m_cmdBuffersUsed(0),
-    m_descriptorPoolTracker(device) {
+    m_cmdBuffersUsed(0) {
     const auto& graphicsQueue = m_device->queues().graphics;
     const auto& transferQueue = m_device->queues().transfer;
 
@@ -173,9 +172,6 @@ namespace dxvk {
     // that are no longer in use
     m_resources.reset();
 
-    // Recycle heavy Vulkan objects
-    m_descriptorPoolTracker.reset();
-
     // Return buffer memory slices
     m_bufferTracker.reset();
 
@@ -186,6 +182,11 @@ namespace dxvk {
     // Less important stuff
     m_signalTracker.reset();
     m_statCounters.reset();
+
+    for (const auto& descriptorPools : m_descriptorPools)
+      descriptorPools.second->recycleDescriptorPool(descriptorPools.first);
+
+    m_descriptorPools.clear();
   }
 
 

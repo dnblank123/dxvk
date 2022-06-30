@@ -10,9 +10,24 @@ namespace dxvk::util {
    * \param [in] shaderStages Shader stage flags
    * \returns Corresponding pipeline stage flags
    */
-  VkPipelineStageFlags pipelineStages(
-          VkShaderStageFlags shaderStages);
+  inline VkPipelineStageFlags pipelineStages(
+          VkShaderStageFlags shaderStages) {
+    return (shaderStages & VK_SHADER_STAGE_ALL_GRAPHICS) << 3
+         | (shaderStages & VK_SHADER_STAGE_COMPUTE_BIT) << 6;
+  }
   
+  /**
+   * \brief Gets shader stage flags included in pipeline stages
+   *
+   * \param [in] pipelineStages Pipeline stage flags
+   * \returns Corresponding shader stage flags, if any
+   */
+  inline VkShaderStageFlags shaderStages(
+          VkPipelineStageFlags pipelineStages) {
+    return ((pipelineStages >> 3) & VK_SHADER_STAGE_ALL_GRAPHICS)
+         | ((pipelineStages >> 6) & VK_SHADER_STAGE_COMPUTE_BIT);
+  }
+
   /**
    * \brief Computes number of mip levels for an image
    * 

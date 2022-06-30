@@ -56,8 +56,8 @@ namespace dxvk {
     /// Shader stage
     VkShaderStageFlagBits stage;
     /// Descriptor info
-    uint32_t resourceSlotCount = 0;
-    const DxvkResourceSlot* resourceSlots = nullptr;
+    uint32_t bindingCount = 0;
+    const DxvkBindingInfo* bindings = nullptr;
     /// Input and output register mask
     uint32_t inputMask = 0;
     uint32_t outputMask = 0;
@@ -116,31 +116,30 @@ namespace dxvk {
     DxvkShaderFlags flags() const {
       return m_flags;
     }
-    
+
     /**
-     * \brief Adds resource slots definitions to a mapping
-     * 
-     * Used to generate the exact descriptor set layout when
-     * compiling a graphics or compute pipeline. Slot indices
-     * have to be mapped to actual binding numbers.
+     * \brief Retrieves binding layout
+     * \returns Binding layout
      */
-    void defineResourceSlots(
-            DxvkDescriptorSlotMapping& mapping) const;
+    const DxvkBindingLayout& getBindings() const {
+      return m_bindings;
+    }
     
     /**
      * \brief Creates a shader module
-     * 
-     * Maps the binding slot numbers 
+     *
+     * Remaps resource binding and descriptor set
+     * numbers to match the given binding layout.
      * \param [in] vkd Vulkan device functions
-     * \param [in] mapping Resource slot mapping
+     * \param [in] layout Binding layout
      * \param [in] info Module create info
      * \returns The shader module
      */
     DxvkShaderModule createShaderModule(
-      const Rc<vk::DeviceFn>&          vkd,
-      const DxvkDescriptorSlotMapping& mapping,
+      const Rc<vk::DeviceFn>&           vkd,
+      const DxvkBindingLayoutObjects*   layout,
       const DxvkShaderModuleCreateInfo& info);
-    
+
     /**
      * \brief Dumps SPIR-V shader
      * 
@@ -199,7 +198,19 @@ namespace dxvk {
     }
     
   private:
-    
+
+    struct ConstOffsets {
+      uint32_t bindingId;
+      uint32_t constIdOffset;
+    };
+
+    struct BindingOffsets {
+      uint32_t bindingId;
+      uint32_t constIdOffset;
+      uint32_t bindingOffset;
+      uint32_t setOffset;
+    };
+
     DxvkShaderCreateInfo          m_info;
     SpirvCompressedBuffer         m_code;
     
@@ -210,9 +221,10 @@ namespace dxvk {
     size_t                        m_o1IdxOffset = 0;
     size_t                        m_o1LocOffset = 0;
 
-    std::vector<DxvkResourceSlot> m_slots;
     std::vector<char>             m_uniformData;
-    std::vector<size_t>           m_idOffsets;
+    std::vector<BindingOffsets>   m_bindingOffsets;
+
+    DxvkBindingLayout             m_bindings;
 
     static void eliminateInput(SpirvCodeBuffer& code, uint32_t location);
 

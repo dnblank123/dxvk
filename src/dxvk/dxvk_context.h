@@ -22,7 +22,7 @@ namespace dxvk {
     constexpr static VkDeviceSize StagingBufferSize = 4ull << 20;
   public:
     
-    DxvkContext(const Rc<DxvkDevice>& device);
+    DxvkContext(const Rc<DxvkDevice>& device, DxvkContextType type);
     ~DxvkContext();
     
     /**
@@ -48,6 +48,14 @@ namespace dxvk {
      * \returns Active command list
      */
     Rc<DxvkCommandList> endRecording();
+
+    /**
+     * \brief Ends frame
+     *
+     * Must be called once per frame before the
+     * final call to \ref endRecording.
+     */
+    void endFrame();
 
     /**
      * \brief Flushes command buffer
@@ -79,7 +87,24 @@ namespace dxvk {
      * \param [in] targets Render targets to bind
      */
     void bindRenderTargets(
-      const DxvkRenderTargets&    targets);
+      const DxvkRenderTargets&    targets) {
+      // Set up default render pass ops
+      m_state.om.renderTargets = targets;
+      
+      this->resetRenderPassOps(
+        m_state.om.renderTargets,
+        m_state.om.renderPassOps);
+
+      if (!m_state.om.framebufferInfo.hasTargets(targets)) {
+        // Create a new framebuffer object next
+        // time we start rendering something
+        m_flags.set(DxvkContextFlag::GpDirtyFramebuffer);
+      } else {
+        // Don't redundantly spill the render pass if
+        // the same render targets are bound again
+        m_flags.clr(DxvkContextFlag::GpDirtyFramebuffer);
+      }
+    }
     
     /**
      * \brief Binds indirect argument buffer
@@ -91,7 +116,12 @@ namespace dxvk {
      */
     void bindDrawBuffers(
       const DxvkBufferSlice&      argBuffer,
-      const DxvkBufferSlice&      cntBuffer);
+      const DxvkBufferSlice&      cntBuffer) {
+      m_state.id.argBuffer = argBuffer;
+      m_state.id.cntBuffer = cntBuffer;
+
+      m_flags.set(DxvkContextFlag::DirtyDrawBuffer);
+    }
     
     /**
      * \brief Binds index buffer
@@ -103,18 +133,37 @@ namespace dxvk {
      */
     void bindIndexBuffer(
       const DxvkBufferSlice&      buffer,
-            VkIndexType           indexType);
+            VkIndexType           indexType) {
+      if (!m_state.vi.indexBuffer.matchesBuffer(buffer))
+        m_vbTracked.clr(MaxNumVertexBindings);
+
+      m_state.vi.indexBuffer = buffer;
+      m_state.vi.indexType   = indexType;
+
+      m_flags.set(DxvkContextFlag::GpDirtyIndexBuffer);
+    }
     
     /**
      * \brief Binds buffer as a shader resource
      * 
      * Can be used for uniform and storage buffers.
+     * \param [in] stages Shader stages that access the binding
      * \param [in] slot Resource binding slot
      * \param [in] buffer Buffer to bind
      */
     void bindResourceBuffer(
+            VkShaderStageFlags    stages,
             uint32_t              slot,
-      const DxvkBufferSlice&      buffer);
+      const DxvkBufferSlice&      buffer) {
+      bool needsUpdate = !m_rc[slot].bufferSlice.matchesBuffer(buffer);
+
+      if (likely(needsUpdate))
+        m_rcTracked.clr(slot);
+
+      m_rc[slot].bufferSlice = buffer;
+
+      m_descriptorState.dirtyBuffers(stages);
+    }
     
     /**
      * \brief Binds image or buffer view
@@ -122,26 +171,44 @@ namespace dxvk {
      * Can be used for sampled images with a dedicated
      * sampler and for storage images, as well as for
      * uniform texel buffers and storage texel buffers.
+     * \param [in] stages Shader stages that access the binding
      * \param [in] slot Resource binding slot
      * \param [in] imageView Image view to bind
      * \param [in] bufferView Buffer view to bind
      */
     void bindResourceView(
+            VkShaderStageFlags    stages,
             uint32_t              slot,
       const Rc<DxvkImageView>&    imageView,
-      const Rc<DxvkBufferView>&   bufferView);
+      const Rc<DxvkBufferView>&   bufferView) {
+      m_rc[slot].imageView   = imageView;
+      m_rc[slot].bufferView  = bufferView;
+      m_rc[slot].bufferSlice = bufferView != nullptr
+        ? bufferView->slice()
+        : DxvkBufferSlice();
+      m_rcTracked.clr(slot);
+
+      m_descriptorState.dirtyViews(stages);
+    }
     
     /**
      * \brief Binds image sampler
      * 
      * Binds a sampler that can be used together with
      * an image in order to read from a texture.
+     * \param [in] stages Shader stages that access the binding
      * \param [in] slot Resource binding slot
      * \param [in] sampler Sampler view to bind
      */
     void bindResourceSampler(
+            VkShaderStageFlags    stages,
             uint32_t              slot,
-      const Rc<DxvkSampler>&      sampler);
+      const Rc<DxvkSampler>&      sampler) {
+      m_rc[slot].sampler = sampler;
+      m_rcTracked.clr(slot);
+
+      m_descriptorState.dirtyViews(stages);
+    }
     
     /**
      * \brief Binds a shader to a given state
@@ -164,7 +231,18 @@ namespace dxvk {
     void bindVertexBuffer(
             uint32_t              binding,
       const DxvkBufferSlice&      buffer,
-            uint32_t              stride);
+            uint32_t              stride) {
+      if (!m_state.vi.vertexBuffers[binding].matchesBuffer(buffer))
+        m_vbTracked.clr(binding);
+
+      m_state.vi.vertexBuffers[binding] = buffer;
+      m_flags.set(DxvkContextFlag::GpDirtyVertexBuffers);
+      
+      if (unlikely(m_state.vi.vertexStrides[binding] != stride)) {
+        m_state.vi.vertexStrides[binding] = stride;
+        m_flags.set(DxvkContextFlag::GpDirtyPipelineState);
+      }
+    }
 
     /**
      * \brief Binds transform feedback buffer
@@ -176,7 +254,15 @@ namespace dxvk {
     void bindXfbBuffer(
             uint32_t              binding,
       const DxvkBufferSlice&      buffer,
-      const DxvkBufferSlice&      counter);
+      const DxvkBufferSlice&      counter) {
+      if (!m_state.xfb.buffers [binding].matches(buffer)
+       || !m_state.xfb.counters[binding].matches(counter)) {
+        m_state.xfb.buffers [binding] = buffer;
+        m_state.xfb.counters[binding] = counter;
+        
+        m_flags.set(DxvkContextFlag::GpDirtyXfbBuffers);
+      }
+    }
     
     /**
      * \brief Blits an image
@@ -1036,15 +1122,19 @@ namespace dxvk {
   private:
     
     Rc<DxvkDevice>          m_device;
+    DxvkContextType         m_type;
     DxvkObjects*            m_common;
     
     Rc<DxvkCommandList>     m_cmd;
-    Rc<DxvkDescriptorPool>  m_descPool;
     Rc<DxvkBuffer>          m_zeroBuffer;
 
     DxvkContextFlags        m_flags;
     DxvkContextState        m_state;
     DxvkContextFeatures     m_features;
+    DxvkDescriptorState     m_descriptorState;
+
+    Rc<DxvkDescriptorPool>  m_descriptorPool;
+    Rc<DxvkDescriptorManager> m_descriptorManager;
 
     DxvkBarrierSet          m_sdmaAcquires;
     DxvkBarrierSet          m_sdmaBarriers;
@@ -1053,22 +1143,19 @@ namespace dxvk {
     DxvkBarrierSet          m_execBarriers;
     DxvkBarrierSet          m_gfxBarriers;
     DxvkBarrierControlFlags m_barrierControl;
-    
+
     DxvkGpuQueryManager     m_queryManager;
     DxvkStagingBuffer       m_staging;
     
     DxvkRenderTargetLayouts m_rtLayouts = { };
 
-    VkPipeline m_gpActivePipeline = VK_NULL_HANDLE;
-    VkPipeline m_cpActivePipeline = VK_NULL_HANDLE;
-
-    VkDescriptorSet m_gpSet = VK_NULL_HANDLE;
-    VkDescriptorSet m_cpSet = VK_NULL_HANDLE;
-
     DxvkBindingSet<MaxNumVertexBindings + 1>  m_vbTracked;
     DxvkBindingSet<MaxNumResourceSlots>       m_rcTracked;
 
     std::vector<DxvkDeferredClear> m_deferredClears;
+
+    std::array<VkWriteDescriptorSet, MaxNumActiveBindings> m_descriptorWrites;
+    std::array<DxvkDescriptorInfo,   MaxNumActiveBindings> m_descriptors;
 
     std::array<DxvkShaderResourceSlot, MaxNumResourceSlots>  m_rc;
     std::array<DxvkGraphicsPipeline*, 4096> m_gpLookupCache = { };
@@ -1216,17 +1303,13 @@ namespace dxvk {
     bool updateGraphicsPipeline();
     bool updateGraphicsPipelineState();
     
-    void updateComputeShaderResources();
-    void updateGraphicsShaderResources();
+    void invalidateState();
 
     template<VkPipelineBindPoint BindPoint>
-    void updateShaderResources(
-      const DxvkPipelineLayout*     layout);
-    
-    template<VkPipelineBindPoint BindPoint>
-    void updateShaderDescriptorSetBinding(
-            VkDescriptorSet         set,
-      const DxvkPipelineLayout*     layout);
+    void updateResourceBindings(const DxvkBindingLayoutObjects* layout);
+
+    void updateComputeShaderResources();
+    void updateGraphicsShaderResources();
 
     DxvkFramebufferInfo makeFramebufferInfo(
       const DxvkRenderTargets&      renderTargets);
@@ -1302,9 +1385,6 @@ namespace dxvk {
             VkPipelineStageFlags      dstStages,
             VkAccessFlags             dstAccess);
     
-    VkDescriptorSet allocateDescriptorSet(
-            VkDescriptorSetLayout     layout);
-
     void trackDrawBuffer();
 
     bool tryInvalidateDeviceLocalBuffer(

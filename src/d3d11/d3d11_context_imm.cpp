@@ -13,7 +13,7 @@ namespace dxvk {
           D3D11Device*    pParent,
     const Rc<DxvkDevice>& Device)
   : D3D11DeviceContext(pParent, Device, DxvkCsChunkFlag::SingleUse),
-    m_csThread(Device, Device->createContext()),
+    m_csThread(Device, Device->createContext(DxvkContextType::Primary)),
     m_maxImplicitDiscardSize(pParent->GetOptions()->maxImplicitDiscardSize),
     m_videoContext(this, Device) {
     EmitCs([
@@ -682,6 +682,13 @@ namespace dxvk {
   }
   
   
+  void D3D11ImmediateContext::EndFrame() {
+    EmitCs([] (DxvkContext* ctx) {
+      ctx->endFrame();
+    });
+  }
+
+
   bool D3D11ImmediateContext::WaitForResource(
     const Rc<DxvkResource>&                 Resource,
           uint64_t                          SequenceNumber,

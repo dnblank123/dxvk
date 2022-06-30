@@ -190,7 +190,7 @@ namespace dxvk {
     const D3DDISPLAYMODEEX*      pFullscreenDisplayMode)
     : D3D9SwapChainExBase(pDevice)
     , m_device           (pDevice->GetDXVKDevice())
-    , m_context          (m_device->createContext())
+    , m_context          (m_device->createContext(DxvkContextType::Supplementary))
     , m_frameLatencyCap  (pDevice->GetOptions()->maxFrameLatency)
     , m_frameLatencySignal(new sync::Fence(m_frameId))
     , m_dialog           (pDevice->GetOptions()->enableDialogMode) {
@@ -809,6 +809,7 @@ namespace dxvk {
 
 
   void D3D9SwapChainEx::PresentImage(UINT SyncInterval) {
+    m_parent->EndFrame();
     m_parent->Flush();
 
     // Retrieve the image and image view to present

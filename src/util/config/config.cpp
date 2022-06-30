@@ -310,6 +310,10 @@ namespace dxvk {
     { R"(\\SRBT\.exe$)", {{
       { "d3d9.deferSurfaceCreation",        "True" },
     }} },
+    /* A Way Out: fix for stuttering and low fps  */
+    { R"(\\AWayOut(_friend)?\.exe$)", {{
+      { "dxgi.maxFrameLatency",                "1" },
+    }} },
 
     /**********************************************/
     /* D3D9 GAMES                                 */
@@ -786,6 +790,10 @@ namespace dxvk {
     if (appConfig != g_appDefaults.end()) {
       // Inform the user that we loaded a default config
       Logger::info(str::format("Found built-in config:"));
+
+      for (auto& pair : appConfig->second.m_options)
+        Logger::info(str::format("  ", pair.first, " = ", pair.second));
+
       return appConfig->second;
     }
 

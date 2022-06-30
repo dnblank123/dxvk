@@ -191,11 +191,11 @@ namespace dxvk {
     else
       ctx->clearRenderTarget(dstView, VK_IMAGE_ASPECT_COLOR_BIT, VkClearValue());
 
-    ctx->bindResourceSampler(BindingIds::Image, m_samplerPresent);
-    ctx->bindResourceSampler(BindingIds::Gamma, m_samplerGamma);
+    ctx->bindResourceSampler(VK_SHADER_STAGE_FRAGMENT_BIT, BindingIds::Image, m_samplerPresent);
+    ctx->bindResourceSampler(VK_SHADER_STAGE_FRAGMENT_BIT, BindingIds::Gamma, m_samplerGamma);
 
-    ctx->bindResourceView(BindingIds::Image, srcView, nullptr);
-    ctx->bindResourceView(BindingIds::Gamma, m_gammaView, nullptr);
+    ctx->bindResourceView(VK_SHADER_STAGE_FRAGMENT_BIT, BindingIds::Image, srcView, nullptr);
+    ctx->bindResourceView(VK_SHADER_STAGE_FRAGMENT_BIT, BindingIds::Gamma, m_gammaView, nullptr);
 
     ctx->bindShader(VK_SHADER_STAGE_VERTEX_BIT, m_vs);
     ctx->bindShader(VK_SHADER_STAGE_FRAGMENT_BIT, fs);
@@ -317,10 +317,10 @@ namespace dxvk {
     SpirvCodeBuffer fsCodeCopy(dxvk_present_frag);
     SpirvCodeBuffer fsCodeResolve(dxvk_present_frag_ms);
     SpirvCodeBuffer fsCodeResolveAmd(dxvk_present_frag_ms_amd);
-    
-    const std::array<DxvkResourceSlot, 2> fsResourceSlots = {{
-      { BindingIds::Image, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_IMAGE_VIEW_TYPE_2D },
-      { BindingIds::Gamma, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_IMAGE_VIEW_TYPE_1D },
+
+    const std::array<DxvkBindingInfo, 2> fsBindings = {{
+      { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, BindingIds::Image, VK_IMAGE_VIEW_TYPE_2D, 0, VK_ACCESS_SHADER_READ_BIT },
+      { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, BindingIds::Gamma, VK_IMAGE_VIEW_TYPE_2D, 0, VK_ACCESS_SHADER_READ_BIT },
     }};
 
     DxvkShaderCreateInfo vsInfo;
@@ -330,8 +330,8 @@ namespace dxvk {
     
     DxvkShaderCreateInfo fsInfo;
     fsInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    fsInfo.resourceSlotCount = fsResourceSlots.size();
-    fsInfo.resourceSlots = fsResourceSlots.data();
+    fsInfo.bindingCount = fsBindings.size();
+    fsInfo.bindings = fsBindings.data();
     fsInfo.pushConstSize = sizeof(PresenterArgs);
     fsInfo.inputMask = 0x1;
     fsInfo.outputMask = 0x1;

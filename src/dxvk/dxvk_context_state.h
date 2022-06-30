@@ -27,8 +27,6 @@ namespace dxvk {
     GpDirtyFramebuffer,         ///< Framebuffer binding is out of date
     GpDirtyPipeline,            ///< Graphics pipeline binding is out of date
     GpDirtyPipelineState,       ///< Graphics pipeline needs to be recompiled
-    GpDirtyResources,           ///< Graphics pipeline resource bindings are out of date
-    GpDirtyDescriptorBinding,   ///< Graphics descriptor set needs to be rebound
     GpDirtyVertexBuffers,       ///< Vertex buffer bindings are out of date
     GpDirtyIndexBuffer,         ///< Index buffer binding are out of date
     GpDirtyXfbBuffers,          ///< Transform feedback buffer bindings are out of date
@@ -44,8 +42,6 @@ namespace dxvk {
     
     CpDirtyPipeline,            ///< Compute pipeline binding are out of date
     CpDirtyPipelineState,       ///< Compute pipeline needs to be recompiled
-    CpDirtyResources,           ///< Compute pipeline resource bindings are out of date
-    CpDirtyDescriptorBinding,   ///< Compute descriptor set needs to be rebound
     
     DirtyDrawBuffer,            ///< Indirect argument buffer is dirty
     DirtyPushConstants,         ///< Push constant data has changed

@@ -64,15 +64,23 @@ namespace dxvk {
     const DxvkShaderCreateInfo&   info,
           SpirvCodeBuffer&&       spirv)
   : m_info(info), m_code(spirv) {
-    m_info.resourceSlots = nullptr;
     m_info.uniformData = nullptr;
+    m_info.bindings = nullptr;
 
     // Copy resource binding slot infos
-    if (info.resourceSlotCount) {
-      m_slots.resize(info.resourceSlotCount);
-      for (uint32_t i = 0; i < info.resourceSlotCount; i++)
-        m_slots[i] = info.resourceSlots[i];
-      m_info.resourceSlots = m_slots.data();
+    for (uint32_t i = 0; i < info.bindingCount; i++) {
+      DxvkBindingInfo binding = info.bindings[i];
+      binding.stages = info.stage;
+      m_bindings.addBinding(binding);
+    }
+
+    if (info.pushConstSize) {
+      VkPushConstantRange pushConst;
+      pushConst.stageFlags = info.stage;
+      pushConst.offset = info.pushConstOffset;
+      pushConst.size = info.pushConstSize;
+
+      m_bindings.addPushConstantRange(pushConst);
     }
 
     // Copy uniform buffer data
@@ -84,15 +92,32 @@ namespace dxvk {
 
     // Run an analysis pass over the SPIR-V code to gather some
     // info that we may need during pipeline compilation.
+    std::vector<BindingOffsets> bindingOffsets;
+    std::vector<ConstOffsets> constIdOffsets;
+    std::vector<uint32_t> varIds;
+
     SpirvCodeBuffer code = std::move(spirv);
     uint32_t o1VarId = 0;
     
     for (auto ins : code) {
       if (ins.opCode() == spv::OpDecorate) {
-        if (ins.arg(2) == spv::DecorationBinding
-         || ins.arg(2) == spv::DecorationSpecId)
-          m_idOffsets.push_back(ins.offset() + 3);
-        
+        if (ins.arg(2) == spv::DecorationBinding) {
+          uint32_t varId = ins.arg(1);
+          bindingOffsets.resize(std::max(bindingOffsets.size(), size_t(varId + 1)));
+          bindingOffsets[varId].bindingId = ins.arg(3);
+          bindingOffsets[varId].bindingOffset = ins.offset() + 3;
+          varIds.push_back(varId);
+        }
+
+        if (ins.arg(2) == spv::DecorationDescriptorSet) {
+          uint32_t varId = ins.arg(1);
+          bindingOffsets.resize(std::max(bindingOffsets.size(), size_t(varId + 1)));
+          bindingOffsets[varId].setOffset = ins.offset() + 3;
+        }
+
+        if (ins.arg(2) == spv::DecorationSpecId)
+          constIdOffsets.push_back({ ins.arg(3), ins.offset() + 3 });
+
         if (ins.arg(2) == spv::DecorationLocation && ins.arg(3) == 1) {
           m_o1LocOffset = ins.offset() + 3;
           o1VarId = ins.arg(1);
@@ -117,6 +142,25 @@ namespace dxvk {
         if (ins.arg(1) == spv::CapabilityShaderViewportIndexLayerEXT)
           m_flags.set(DxvkShaderFlag::ExportsViewportIndexLayerFromVertexStage);
       }
+
+      // Ignore the actual shader code, there's nothing interesting for us in there.
+      if (ins.opCode() == spv::OpFunction)
+        break;
+    }
+
+    // Combine spec constant IDs with other binding info
+    for (auto varId : varIds) {
+      BindingOffsets info = bindingOffsets[varId];
+
+      for (const auto& specOfs : constIdOffsets) {
+        if (info.bindingId == specOfs.bindingId) {
+          info.constIdOffset = specOfs.constIdOffset;
+          break;
+        }
+      }
+
+      if (info.bindingOffset)
+        m_bindingOffsets.push_back(info);
     }
   }
 
@@ -126,30 +170,26 @@ namespace dxvk {
   }
   
   
-  void DxvkShader::defineResourceSlots(
-          DxvkDescriptorSlotMapping& mapping) const {
-    for (const auto& slot : m_slots)
-      mapping.defineSlot(m_info.stage, slot);
-    
-    if (m_info.pushConstSize) {
-      mapping.definePushConstRange(m_info.stage,
-        m_info.pushConstOffset,
-        m_info.pushConstSize);
-    }
-  }
-  
-  
   DxvkShaderModule DxvkShader::createShaderModule(
-    const Rc<vk::DeviceFn>&          vkd,
-    const DxvkDescriptorSlotMapping& mapping,
+    const Rc<vk::DeviceFn>&           vkd,
+    const DxvkBindingLayoutObjects*   layout,
     const DxvkShaderModuleCreateInfo& info) {
     SpirvCodeBuffer spirvCode = m_code.decompress();
     uint32_t* code = spirvCode.data();
     
     // Remap resource binding IDs
-    for (uint32_t ofs : m_idOffsets) {
-      if (code[ofs] < MaxNumResourceSlots)
-        code[ofs] = mapping.getBindingId(code[ofs]);
+    for (const auto& info : m_bindingOffsets) {
+      auto mappedBinding = layout->lookupBinding(info.bindingId);
+
+      if (mappedBinding) {
+        code[info.bindingOffset] = mappedBinding->binding;
+
+        if (info.constIdOffset)
+          code[info.constIdOffset] = mappedBinding->constId;
+
+        if (info.setOffset)
+          code[info.setOffset] = mappedBinding->set;
+      }
     }
 
     // For dual-source blending we need to re-map

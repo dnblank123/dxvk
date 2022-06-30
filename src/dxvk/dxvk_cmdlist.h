@@ -146,17 +146,9 @@ namespace dxvk {
      * the device can guarantee that the submission has
      * completed.
      */
-    template<DxvkAccess Access>
-    void trackResource(Rc<DxvkResource> rc) {
-      m_resources.trackResource<Access>(std::move(rc));
-    }
-    
-    /**
-     * \brief Tracks a descriptor pool
-     * \param [in] pool The descriptor pool
-     */
-    void trackDescriptorPool(Rc<DxvkDescriptorPool> pool) {
-      m_descriptorPoolTracker.trackDescriptorPool(pool);
+    template<DxvkAccess Access, typename T>
+    void trackResource(const Rc<T>& rc) {
+      m_resources.trackResource<Access>(rc.ptr());
     }
     
     /**
@@ -200,7 +192,7 @@ namespace dxvk {
       m_resources.notify();
       m_signalTracker.notify();
     }
-    
+
     /**
      * \brief Resets the command list
      * 
@@ -291,6 +283,20 @@ namespace dxvk {
     }
     
     
+    void cmdBindDescriptorSets(
+            VkPipelineBindPoint       pipeline,
+            VkPipelineLayout          pipelineLayout,
+            uint32_t                  firstSet,
+            uint32_t                  descriptorSetCount,
+      const VkDescriptorSet*          descriptorSets,
+            uint32_t                  dynamicOffsetCount,
+      const uint32_t*                 pDynamicOffsets) {
+      m_vkd->vkCmdBindDescriptorSets(m_execBuffer,
+        pipeline, pipelineLayout, firstSet, descriptorSetCount,
+        descriptorSets, dynamicOffsetCount, pDynamicOffsets);
+    }
+
+
     void cmdBindIndexBuffer(
             VkBuffer                buffer,
             VkDeviceSize            offset,
@@ -749,6 +755,13 @@ namespace dxvk {
         m_vkd->device(), queryPool, queryId, 1);
     }
 
+    void trackDescriptorPool(
+      const Rc<DxvkDescriptorPool>&       pool,
+      const Rc<DxvkDescriptorManager>&    manager) {
+      pool->updateStats(m_statCounters);
+      m_descriptorPools.push_back({ pool, manager });
+    }
+
   private:
     
     DxvkDevice*         m_device;
@@ -768,12 +781,15 @@ namespace dxvk {
     
     DxvkCmdBufferFlags  m_cmdBuffersUsed;
     DxvkLifetimeTracker m_resources;
-    DxvkDescriptorPoolTracker m_descriptorPoolTracker;
     DxvkSignalTracker   m_signalTracker;
     DxvkGpuEventTracker m_gpuEventTracker;
     DxvkGpuQueryTracker m_gpuQueryTracker;
     DxvkBufferTracker   m_bufferTracker;
     DxvkStatCounters    m_statCounters;
+
+    std::vector<std::pair<
+      Rc<DxvkDescriptorPool>,
+      Rc<DxvkDescriptorManager>>> m_descriptorPools;
 
     VkCommandBuffer getCmdBuffer(DxvkCmdBuffer cmdBuffer) const {
       if (cmdBuffer == DxvkCmdBuffer::ExecBuffer) return m_execBuffer;

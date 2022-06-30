@@ -7,8 +7,9 @@
 
 namespace dxvk {
   
-  DxvkContext::DxvkContext(const Rc<DxvkDevice>& device)
+  DxvkContext::DxvkContext(const Rc<DxvkDevice>& device, DxvkContextType type)
   : m_device      (device),
+    m_type        (type),
     m_common      (&device->m_objects),
     m_sdmaAcquires(DxvkCmdBuffer::SdmaBuffer),
     m_sdmaBarriers(DxvkCmdBuffer::SdmaBuffer),
@@ -26,6 +27,21 @@ namespace dxvk {
     // Init framebuffer info with default render pass in case
     // the app does not explicitly bind any render targets
     m_state.om.framebufferInfo = makeFramebufferInfo(m_state.om.renderTargets);
+
+    for (uint32_t i = 0; i < MaxNumActiveBindings; i++) {
+      m_descriptorWrites[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      m_descriptorWrites[i].pNext = nullptr;
+      m_descriptorWrites[i].dstSet = VK_NULL_HANDLE;
+      m_descriptorWrites[i].dstBinding = 0;
+      m_descriptorWrites[i].dstArrayElement = 0;
+      m_descriptorWrites[i].descriptorCount = 1;
+      m_descriptorWrites[i].descriptorType = VK_DESCRIPTOR_TYPE_MAX_ENUM;
+      m_descriptorWrites[i].pImageInfo = &m_descriptors[i].image;
+      m_descriptorWrites[i].pBufferInfo = &m_descriptors[i].buffer;
+      m_descriptorWrites[i].pTexelBufferView = &m_descriptors[i].texelBuffer;
+    }
+
+    m_descriptorManager = new DxvkDescriptorManager(device.ptr(), type);
   }
   
   
@@ -53,7 +69,6 @@ namespace dxvk {
       DxvkContextFlag::GpDirtyFramebuffer,
       DxvkContextFlag::GpDirtyPipeline,
       DxvkContextFlag::GpDirtyPipelineState,
-      DxvkContextFlag::GpDirtyResources,
       DxvkContextFlag::GpDirtyVertexBuffers,
       DxvkContextFlag::GpDirtyIndexBuffer,
       DxvkContextFlag::GpDirtyXfbBuffers,
@@ -64,8 +79,17 @@ namespace dxvk {
       DxvkContextFlag::GpDirtyDepthBounds,
       DxvkContextFlag::CpDirtyPipeline,
       DxvkContextFlag::CpDirtyPipelineState,
-      DxvkContextFlag::CpDirtyResources,
       DxvkContextFlag::DirtyDrawBuffer);
+
+    m_descriptorState.dirtyStages(
+      VK_SHADER_STAGE_ALL_GRAPHICS |
+      VK_SHADER_STAGE_COMPUTE_BIT);
+
+    m_state.gp.pipeline = nullptr;
+    m_state.cp.pipeline = nullptr;
+
+    if (m_descriptorPool == nullptr)
+      m_descriptorPool = m_descriptorManager->getDescriptorPool();
   }
   
   
@@ -77,8 +101,21 @@ namespace dxvk {
     m_initBarriers.recordCommands(m_cmd);
     m_execBarriers.recordCommands(m_cmd);
 
+    if (m_descriptorPool->shouldSubmit(false)) {
+      m_cmd->trackDescriptorPool(m_descriptorPool, m_descriptorManager);
+      m_descriptorPool = m_descriptorManager->getDescriptorPool();
+    }
+
     m_cmd->endRecording();
     return std::exchange(m_cmd, nullptr);
+  }
+
+
+  void DxvkContext::endFrame() {
+    if (m_descriptorPool->shouldSubmit(true)) {
+      m_cmd->trackDescriptorPool(m_descriptorPool, m_descriptorManager);
+      m_descriptorPool = m_descriptorManager->getDescriptorPool();
+    }
   }
 
 
@@ -103,103 +140,6 @@ namespace dxvk {
   }
   
   
-  void DxvkContext::bindRenderTargets(
-    const DxvkRenderTargets&    targets) {
-    // Set up default render pass ops
-    m_state.om.renderTargets = targets;
-    
-    this->resetRenderPassOps(
-      m_state.om.renderTargets,
-      m_state.om.renderPassOps);
-
-    if (!m_state.om.framebufferInfo.hasTargets(targets)) {
-      // Create a new framebuffer object next
-      // time we start rendering something
-      m_flags.set(DxvkContextFlag::GpDirtyFramebuffer);
-    } else {
-      // Don't redundantly spill the render pass if
-      // the same render targets are bound again
-      m_flags.clr(DxvkContextFlag::GpDirtyFramebuffer);
-    }
-  }
-  
-  
-  void DxvkContext::bindDrawBuffers(
-    const DxvkBufferSlice&      argBuffer,
-    const DxvkBufferSlice&      cntBuffer) {
-    m_state.id.argBuffer = argBuffer;
-    m_state.id.cntBuffer = cntBuffer;
-
-    m_flags.set(DxvkContextFlag::DirtyDrawBuffer);
-  }
-
-
-  void DxvkContext::bindIndexBuffer(
-    const DxvkBufferSlice&      buffer,
-          VkIndexType           indexType) {
-    if (!m_state.vi.indexBuffer.matchesBuffer(buffer))
-      m_vbTracked.clr(MaxNumVertexBindings);
-
-    m_state.vi.indexBuffer = buffer;
-    m_state.vi.indexType   = indexType;
-
-    m_flags.set(DxvkContextFlag::GpDirtyIndexBuffer);
-  }
-  
-  
-  void DxvkContext::bindResourceBuffer(
-          uint32_t              slot,
-    const DxvkBufferSlice&      buffer) {
-    bool needsUpdate = !m_rc[slot].bufferSlice.matchesBuffer(buffer);
-
-    if (likely(needsUpdate))
-      m_rcTracked.clr(slot);
-    else
-      needsUpdate = m_rc[slot].bufferSlice.length() != buffer.length();
-
-    if (likely(needsUpdate)) {
-      m_flags.set(
-        DxvkContextFlag::CpDirtyResources,
-        DxvkContextFlag::GpDirtyResources);
-    } else {
-      m_flags.set(
-        DxvkContextFlag::CpDirtyDescriptorBinding,
-        DxvkContextFlag::GpDirtyDescriptorBinding);
-    }
-
-    m_rc[slot].bufferSlice = buffer;
-  }
-  
-  
-  void DxvkContext::bindResourceView(
-          uint32_t              slot,
-    const Rc<DxvkImageView>&    imageView,
-    const Rc<DxvkBufferView>&   bufferView) {
-    m_rc[slot].imageView   = imageView;
-    m_rc[slot].bufferView  = bufferView;
-    m_rc[slot].bufferSlice = bufferView != nullptr
-      ? bufferView->slice()
-      : DxvkBufferSlice();
-    m_rcTracked.clr(slot);
-
-    m_flags.set(
-      DxvkContextFlag::CpDirtyResources,
-      DxvkContextFlag::GpDirtyResources);
-  }
-  
-  
-  void DxvkContext::bindResourceSampler(
-          uint32_t              slot,
-    const Rc<DxvkSampler>&      sampler) {
-    m_rc[slot].sampler = sampler;
-    m_rcTracked.clr(slot);
-
-    m_flags.set(
-      DxvkContextFlag::CpDirtyResources,
-      DxvkContextFlag::GpDirtyResources);
-  }
-  
-  
   void DxvkContext::bindShader(
           VkShaderStageFlagBits stage,
     const Rc<DxvkShader>&       shader) {
@@ -220,48 +160,15 @@ namespace dxvk {
     if (stage == VK_SHADER_STAGE_COMPUTE_BIT) {
       m_flags.set(
         DxvkContextFlag::CpDirtyPipeline,
-        DxvkContextFlag::CpDirtyPipelineState,
-        DxvkContextFlag::CpDirtyResources);
+        DxvkContextFlag::CpDirtyPipelineState);
     } else {
       m_flags.set(
         DxvkContextFlag::GpDirtyPipeline,
-        DxvkContextFlag::GpDirtyPipelineState,
-        DxvkContextFlag::GpDirtyResources);
+        DxvkContextFlag::GpDirtyPipelineState);
     }
   }
   
   
-  void DxvkContext::bindVertexBuffer(
-          uint32_t              binding,
-    const DxvkBufferSlice&      buffer,
-          uint32_t              stride) {
-    if (!m_state.vi.vertexBuffers[binding].matchesBuffer(buffer))
-      m_vbTracked.clr(binding);
-
-    m_state.vi.vertexBuffers[binding] = buffer;
-    m_flags.set(DxvkContextFlag::GpDirtyVertexBuffers);
-    
-    if (unlikely(m_state.vi.vertexStrides[binding] != stride)) {
-      m_state.vi.vertexStrides[binding] = stride;
-      m_flags.set(DxvkContextFlag::GpDirtyPipelineState);
-    }
-  }
-  
-  
-  void DxvkContext::bindXfbBuffer(
-          uint32_t              binding,
-    const DxvkBufferSlice&      buffer,
-    const DxvkBufferSlice&      counter) {
-    if (!m_state.xfb.buffers [binding].matches(buffer)
-     || !m_state.xfb.counters[binding].matches(counter)) {
-      m_state.xfb.buffers [binding] = buffer;
-      m_state.xfb.counters[binding] = counter;
-      
-      m_flags.set(DxvkContextFlag::GpDirtyXfbBuffers);
-    }
-  }
-
-
   void DxvkContext::blitImage(
     const Rc<DxvkImage>&        dstImage,
     const VkComponentMapping&   dstMapping,
@@ -377,7 +284,7 @@ namespace dxvk {
           VkDeviceSize          length,
           VkClearColorValue     value) {
     this->spillRenderPass(true);
-    this->unbindComputePipeline();
+    this->invalidateState();
 
     // The view range might have been invalidated, so
     // we need to make sure the handle is up to date
@@ -395,7 +302,7 @@ namespace dxvk {
     // Create a descriptor set pointing to the view
     VkBufferView viewObject = bufferView->handle();
     
-    VkDescriptorSet descriptorSet = allocateDescriptorSet(pipeInfo.dsetLayout);
+    VkDescriptorSet descriptorSet = m_descriptorPool->alloc(pipeInfo.dsetLayout);
     
     VkWriteDescriptorSet descriptorWrite;
     descriptorWrite.sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -851,7 +758,7 @@ namespace dxvk {
     this->spillRenderPass(true);
     this->prepareImage(m_execBarriers, srcImage, vk::makeSubresourceRange(srcSubresource));
 
-    this->unbindComputePipeline();
+    this->invalidateState();
 
     // Retrieve compute pipeline for the given format
     auto pipeInfo = m_common->metaPack().getPackPipeline(format);
@@ -884,7 +791,7 @@ namespace dxvk {
     descriptors.srcDepth   = dView->getDescriptor(VK_IMAGE_VIEW_TYPE_2D_ARRAY, layout).image;
     descriptors.srcStencil = sView->getDescriptor(VK_IMAGE_VIEW_TYPE_2D_ARRAY, layout).image;
 
-    VkDescriptorSet dset = allocateDescriptorSet(pipeInfo.dsetLayout);
+    VkDescriptorSet dset = m_descriptorPool->alloc(pipeInfo.dsetLayout);
     m_cmd->updateDescriptorSetWithTemplate(dset, pipeInfo.dsetTemplate, &descriptors);
 
     // Since this is a meta operation, the image may be
@@ -967,7 +874,7 @@ namespace dxvk {
           VkExtent3D            extent,
           VkDeviceSize          elementSize) {
     this->spillRenderPass(true);
-    this->unbindComputePipeline();
+    this->invalidateState();
 
     auto dstBufferSlice = dstBuffer->getSliceHandle(dstBufferOffset, elementSize * util::flattenImageExtent(dstSize));
     auto srcBufferSlice = srcBuffer->getSliceHandle(srcBufferOffset, elementSize * util::flattenImageExtent(srcSize));
@@ -1044,7 +951,7 @@ namespace dxvk {
     }
 
     auto pipeInfo = m_common->metaCopy().getCopyBufferImagePipeline();
-    VkDescriptorSet descriptorSet = allocateDescriptorSet(pipeInfo.dsetLayout);
+    VkDescriptorSet descriptorSet = m_descriptorPool->alloc(pipeInfo.dsetLayout);
 
     std::array<VkWriteDescriptorSet, 2> descriptorWrites;
 
@@ -1131,9 +1038,9 @@ namespace dxvk {
           VkExtent2D            srcExtent,
           VkFormat              format) {
     this->spillRenderPass(true);
-    this->prepareImage(m_execBarriers, dstImage, vk::makeSubresourceRange(dstSubresource));
+    this->invalidateState();
 
-    this->unbindComputePipeline();
+    this->prepareImage(m_execBarriers, dstImage, vk::makeSubresourceRange(dstSubresource));
 
     if (m_execBarriers.isBufferDirty(srcBuffer->getSliceHandle(), DxvkAccess::Read)
      || m_execBarriers.isImageDirty(dstImage, vk::makeSubresourceRange(dstSubresource), DxvkAccess::Write))
@@ -1202,7 +1109,7 @@ namespace dxvk {
     descriptors.dstStencil = tmpBufferViewS->handle();
     descriptors.srcBuffer  = srcBuffer->getDescriptor(srcBufferOffset, VK_WHOLE_SIZE).buffer;
 
-    VkDescriptorSet dset = allocateDescriptorSet(pipeInfo.dsetLayout);
+    VkDescriptorSet dset = m_descriptorPool->alloc(pipeInfo.dsetLayout);
     m_cmd->updateDescriptorSetWithTemplate(dset, pipeInfo.dsetTemplate, &descriptors);
 
     // Unpack the source buffer to temporary buffers
@@ -1661,6 +1568,7 @@ namespace dxvk {
       return;
     
     this->spillRenderPass(false);
+    this->invalidateState();
 
     m_execBarriers.recordCommands(m_cmd);
     
@@ -1709,7 +1617,7 @@ namespace dxvk {
       
       // Create descriptor set with the current source view
       descriptorImage.imageView = pass.srcView;
-      descriptorWrite.dstSet = allocateDescriptorSet(pipeInfo.dsetLayout);
+      descriptorWrite.dstSet = m_descriptorPool->alloc(pipeInfo.dsetLayout);
       m_cmd->updateDescriptorSets(1, &descriptorWrite);
       
       // Set up viewport and scissor rect
@@ -1771,24 +1679,15 @@ namespace dxvk {
       ~(VK_BUFFER_USAGE_TRANSFER_DST_BIT |
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
 
-    if (usage & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) {
-      m_flags.set(prevSlice.handle == slice.handle
-        ? DxvkContextFlags(DxvkContextFlag::GpDirtyDescriptorBinding,
-                           DxvkContextFlag::CpDirtyDescriptorBinding)
-        : DxvkContextFlags(DxvkContextFlag::GpDirtyResources,
-                           DxvkContextFlag::CpDirtyResources));
-    }
+    if (usage & (VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT))
+      m_descriptorState.dirtyBuffers(buffer->getShaderStages());
 
-    // Fast early-out for uniform buffers, very common
-    if (likely(usage == VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT))
+    // Fast early-out for plain buffers, very common
+    if (likely(!(usage & ~(VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT))))
       return;
     
-    if (usage & (VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT
-               | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT
-               | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
-      m_flags.set(DxvkContextFlag::GpDirtyResources,
-                  DxvkContextFlag::CpDirtyResources);
-    }
+    if (usage & (VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT))
+      m_descriptorState.dirtyViews(buffer->getShaderStages());
 
     if (usage & VK_BUFFER_USAGE_INDEX_BUFFER_BIT)
       m_flags.set(DxvkContextFlag::GpDirtyIndexBuffer);
@@ -2617,6 +2516,8 @@ namespace dxvk {
     const VkImageBlit&          region,
     const VkComponentMapping&   mapping,
           VkFilter              filter) {
+    this->invalidateState();
+
     auto dstSubresourceRange = vk::makeSubresourceRange(region.dstSubresource);
     auto srcSubresourceRange = vk::makeSubresourceRange(region.srcSubresource);
 
@@ -2720,7 +2621,7 @@ namespace dxvk {
     VkWriteDescriptorSet descriptorWrite;
     descriptorWrite.sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     descriptorWrite.pNext            = nullptr;
-    descriptorWrite.dstSet           = allocateDescriptorSet(pipeInfo.dsetLayout);
+    descriptorWrite.dstSet           = m_descriptorPool->alloc(pipeInfo.dsetLayout);
     descriptorWrite.dstBinding       = 0;
     descriptorWrite.dstArrayElement  = 0;
     descriptorWrite.descriptorCount  = 1;
@@ -3087,7 +2988,7 @@ namespace dxvk {
           VkExtent3D            extent,
           VkClearValue          value) {
     this->spillRenderPass(false);
-    this->unbindComputePipeline();
+    this->invalidateState();
     
     if (m_execBarriers.isImageDirty(
           imageView->image(),
@@ -3100,7 +3001,7 @@ namespace dxvk {
       imageView->type(), imageFormatInfo(imageView->info().format)->flags);
     
     // Create a descriptor set pointing to the view
-    VkDescriptorSet descriptorSet = allocateDescriptorSet(pipeInfo.dsetLayout);
+    VkDescriptorSet descriptorSet = m_descriptorPool->alloc(pipeInfo.dsetLayout);
     
     VkDescriptorImageInfo viewInfo;
     viewInfo.sampler      = VK_NULL_HANDLE;
@@ -3271,6 +3172,8 @@ namespace dxvk {
           VkImageSubresourceLayers srcSubresource,
           VkOffset3D            srcOffset,
           VkExtent3D            extent) {
+    this->invalidateState();
+
     auto dstSubresourceRange = vk::makeSubresourceRange(dstSubresource);
     auto srcSubresourceRange = vk::makeSubresourceRange(srcSubresource);
     
@@ -3409,7 +3312,7 @@ namespace dxvk {
     descriptorWrite.pBufferInfo      = nullptr;
     descriptorWrite.pTexelBufferView = nullptr;
     
-    descriptorWrite.dstSet = allocateDescriptorSet(pipeInfo.dsetLayout);
+    descriptorWrite.dstSet = m_descriptorPool->alloc(pipeInfo.dsetLayout);
     m_cmd->updateDescriptorSets(1, &descriptorWrite);
 
     if (srcSubresource.aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT) {
@@ -3692,6 +3595,8 @@ namespace dxvk {
           VkFormat                  format,
           VkResolveModeFlagBitsKHR  depthMode,
           VkResolveModeFlagBitsKHR  stencilMode) {
+    this->invalidateState();
+
     auto dstSubresourceRange = vk::makeSubresourceRange(region.dstSubresource);
     auto srcSubresourceRange = vk::makeSubresourceRange(region.srcSubresource);
     
@@ -3773,7 +3678,7 @@ namespace dxvk {
     descriptorWrite.pBufferInfo      = nullptr;
     descriptorWrite.pTexelBufferView = nullptr;
     
-    descriptorWrite.dstSet = allocateDescriptorSet(pipeInfo.dsetLayout);
+    descriptorWrite.dstSet = m_descriptorPool->alloc(pipeInfo.dsetLayout);
     m_cmd->updateDescriptorSets(1, &descriptorWrite);
 
     if (srcStencilView != nullptr) {
@@ -3841,7 +3746,22 @@ namespace dxvk {
       this->applyRenderTargetLoadLayouts();
       this->flushClears(true);
 
-      m_flags.set(DxvkContextFlag::GpRenderPassBound);
+      // Make sure all graphics state gets reapplied on the next draw
+      m_descriptorState.dirtyStages(VK_SHADER_STAGE_ALL_GRAPHICS);
+
+      m_flags.set(
+        DxvkContextFlag::GpRenderPassBound,
+        DxvkContextFlag::GpDirtyPipelineState,
+        DxvkContextFlag::GpDirtyVertexBuffers,
+        DxvkContextFlag::GpDirtyIndexBuffer,
+        DxvkContextFlag::GpDirtyXfbBuffers,
+        DxvkContextFlag::GpDirtyBlendConstants,
+        DxvkContextFlag::GpDirtyStencilRef,
+        DxvkContextFlag::GpDirtyViewport,
+        DxvkContextFlag::GpDirtyDepthBias,
+        DxvkContextFlag::GpDirtyDepthBounds,
+        DxvkContextFlag::DirtyPushConstants);
+
       m_flags.clr(DxvkContextFlag::GpRenderPassSuspended);
 
       m_execBarriers.recordCommands(m_cmd);
@@ -3885,8 +3805,6 @@ namespace dxvk {
         this->transitionRenderTargetLayouts(m_gfxBarriers, false);
 
       m_gfxBarriers.recordCommands(m_cmd);
-
-      this->unbindGraphicsPipeline();
     } else if (!suspend) {
       // We may end a previously suspended render pass
       if (m_flags.test(DxvkContextFlag::GpRenderPassSuspended)) {
@@ -4036,20 +3954,26 @@ namespace dxvk {
   void DxvkContext::unbindComputePipeline() {
     m_flags.set(
       DxvkContextFlag::CpDirtyPipeline,
-      DxvkContextFlag::CpDirtyPipelineState,
-      DxvkContextFlag::CpDirtyResources);
-    
-    m_cpActivePipeline = VK_NULL_HANDLE;
+      DxvkContextFlag::CpDirtyPipelineState);
+
+    m_state.cp.pipeline = nullptr;
   }
   
   
   bool DxvkContext::updateComputePipeline() {
-    m_state.cp.pipeline = lookupComputePipeline(m_state.cp.shaders);
+    if (unlikely(m_state.gp.pipeline != nullptr))
+      this->unbindGraphicsPipeline();
 
-    if (unlikely(m_state.cp.pipeline == nullptr))
+    auto newPipeline = lookupComputePipeline(m_state.cp.shaders);
+    m_state.cp.pipeline = newPipeline;
+
+    if (unlikely(!newPipeline))
       return false;
-    
-    if (m_state.cp.pipeline->layout()->pushConstRange().size)
+
+    m_descriptorState.dirtyStages(VK_SHADER_STAGE_COMPUTE_BIT);
+    m_state.cp.state.bsBindingMask.clear();
+
+    if (m_state.cp.pipeline->getBindings()->layout().getPushConstantRange().size)
       m_flags.set(DxvkContextFlag::DirtyPushConstants);
 
     m_flags.clr(DxvkContextFlag::CpDirtyPipeline);
@@ -4058,14 +3982,14 @@ namespace dxvk {
   
   
   bool DxvkContext::updateComputePipelineState() {
-    m_cpActivePipeline = m_state.cp.pipeline->getPipelineHandle(m_state.cp.state);
+    VkPipeline pipeline = m_state.cp.pipeline->getPipelineHandle(m_state.cp.state);
     
-    if (unlikely(!m_cpActivePipeline))
+    if (unlikely(!pipeline))
       return false;
 
     m_cmd->cmdBindPipeline(
       VK_PIPELINE_BIND_POINT_COMPUTE,
-      m_cpActivePipeline);
+      pipeline);
 
     m_flags.clr(DxvkContextFlag::CpDirtyPipelineState);
     return true;
@@ -4076,7 +4000,6 @@ namespace dxvk {
     m_flags.set(
       DxvkContextFlag::GpDirtyPipeline,
       DxvkContextFlag::GpDirtyPipelineState,
-      DxvkContextFlag::GpDirtyResources,
       DxvkContextFlag::GpDirtyVertexBuffers,
       DxvkContextFlag::GpDirtyIndexBuffer,
       DxvkContextFlag::GpDirtyXfbBuffers,
@@ -4085,21 +4008,25 @@ namespace dxvk {
       DxvkContextFlag::GpDirtyViewport,
       DxvkContextFlag::GpDirtyDepthBias,
       DxvkContextFlag::GpDirtyDepthBounds);
-    
-    m_gpActivePipeline = VK_NULL_HANDLE;
+
+    m_state.gp.pipeline = nullptr;
   }
   
   
   bool DxvkContext::updateGraphicsPipeline() {
-    m_state.gp.pipeline = lookupGraphicsPipeline(m_state.gp.shaders);
+    if (unlikely(m_state.cp.pipeline != nullptr))
+      this->unbindComputePipeline();
 
-    if (unlikely(m_state.gp.pipeline == nullptr)) {
+    auto newPipeline = lookupGraphicsPipeline(m_state.gp.shaders);
+    m_state.gp.pipeline = newPipeline;
+
+    if (unlikely(!newPipeline)) {
       m_state.gp.flags = DxvkGraphicsPipelineFlags();
       return false;
     }
 
-    if (m_state.gp.flags != m_state.gp.pipeline->flags()) {
-      m_state.gp.flags = m_state.gp.pipeline->flags();
+    if (m_state.gp.flags != newPipeline->flags()) {
+      m_state.gp.flags = newPipeline->flags();
 
       // Force-update vertex/index buffers for hazard checks
       m_flags.set(DxvkContextFlag::GpDirtyIndexBuffer,
@@ -4113,7 +4040,10 @@ namespace dxvk {
         this->spillRenderPass(true);
     }
 
-    if (m_state.gp.pipeline->layout()->pushConstRange().size)
+    m_descriptorState.dirtyStages(VK_SHADER_STAGE_ALL_GRAPHICS);
+    m_state.gp.state.bsBindingMask.clear();
+
+    if (newPipeline->getBindings()->layout().getPushConstantRange().size)
       m_flags.set(DxvkContextFlag::DirtyPushConstants);
 
     m_flags.clr(DxvkContextFlag::GpDirtyPipeline);
@@ -4152,236 +4082,268 @@ namespace dxvk {
       : DxvkContextFlag::GpDirtyStencilRef);
     
     // Retrieve and bind actual Vulkan pipeline handle
-    m_gpActivePipeline = m_state.gp.pipeline->getPipelineHandle(
+    VkPipeline pipeline = m_state.gp.pipeline->getPipelineHandle(
       m_state.gp.state, m_state.om.framebufferInfo.renderPass());
 
-    if (unlikely(!m_gpActivePipeline))
+    if (unlikely(!pipeline))
       return false;
 
     m_cmd->cmdBindPipeline(
       VK_PIPELINE_BIND_POINT_GRAPHICS,
-      m_gpActivePipeline);
+      pipeline);
 
     m_flags.clr(DxvkContextFlag::GpDirtyPipelineState);
     return true;
   }
-  
-  
-  void DxvkContext::updateComputeShaderResources() {
-    if ((m_flags.test(DxvkContextFlag::CpDirtyResources))
-     || (m_state.cp.pipeline->layout()->hasStaticBufferBindings()))
-      this->updateShaderResources<VK_PIPELINE_BIND_POINT_COMPUTE>(m_state.cp.pipeline->layout());
 
-    this->updateShaderDescriptorSetBinding<VK_PIPELINE_BIND_POINT_COMPUTE>(
-      m_cpSet, m_state.cp.pipeline->layout());
 
-    m_flags.clr(DxvkContextFlag::CpDirtyResources,
-                DxvkContextFlag::CpDirtyDescriptorBinding);
+  void DxvkContext::invalidateState() {
+    this->unbindComputePipeline();
+    this->unbindGraphicsPipeline();
   }
-  
-  
-  void DxvkContext::updateGraphicsShaderResources() {
-    if ((m_flags.test(DxvkContextFlag::GpDirtyResources))
-     || (m_state.gp.pipeline->layout()->hasStaticBufferBindings()))
-      this->updateShaderResources<VK_PIPELINE_BIND_POINT_GRAPHICS>(m_state.gp.pipeline->layout());
 
-    this->updateShaderDescriptorSetBinding<VK_PIPELINE_BIND_POINT_GRAPHICS>(
-      m_gpSet, m_state.gp.pipeline->layout());
-
-    m_flags.clr(DxvkContextFlag::GpDirtyResources,
-                DxvkContextFlag::GpDirtyDescriptorBinding);
-  }
-  
   
   template<VkPipelineBindPoint BindPoint>
-  void DxvkContext::updateShaderResources(const DxvkPipelineLayout* layout) {
-    std::array<DxvkDescriptorInfo, MaxNumActiveBindings> descriptors;
+  void DxvkContext::updateResourceBindings(const DxvkBindingLayoutObjects* layout) {
+    const auto& bindings = layout->layout();
 
-    // Assume that all bindings are active as a fast path
-    DxvkBindingMask bindMask;
-    bindMask.setFirst(layout->bindingCount());
+    // On 32-bit wine, vkUpdateDescriptorSets has significant overhead due
+    // to struct conversion, so we should use descriptor update templates.
+    // For 64-bit applications, using templates is slower on some drivers.
+    constexpr bool useDescriptorTemplates = env::is32BitHostPlatform();
 
-    for (uint32_t i = 0; i < layout->bindingCount(); i++) {
-      const auto& binding = layout->binding(i);
-      const auto& res     = m_rc[binding.slot];
-      
-      switch (binding.type) {
-        case VK_DESCRIPTOR_TYPE_SAMPLER:
-          if (res.sampler != nullptr) {
-            descriptors[i].image.sampler     = res.sampler->handle();
-            descriptors[i].image.imageView   = VK_NULL_HANDLE;
-            descriptors[i].image.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            
-            if (m_rcTracked.set(binding.slot))
-              m_cmd->trackResource<DxvkAccess::None>(res.sampler);
-          } else {
-            descriptors[i].image = m_common->dummyResources().samplerDescriptor();
-          } break;
-        
-        case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-          if (res.imageView != nullptr && res.imageView->handle(binding.view) != VK_NULL_HANDLE) {
-            descriptors[i].image.sampler     = VK_NULL_HANDLE;
-            descriptors[i].image.imageView   = res.imageView->handle(binding.view);
-            descriptors[i].image.imageLayout = res.imageView->imageInfo().layout;
-            
-            if (m_rcTracked.set(binding.slot)) {
-              m_cmd->trackResource<DxvkAccess::None>(res.imageView);
-              m_cmd->trackResource<DxvkAccess::Read>(res.imageView->image());
-            }
-          } else {
-            bindMask.clr(i);
-            descriptors[i].image = m_common->dummyResources().imageViewDescriptor(binding.view, true);
-          } break;
-        
-        case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-          if (res.imageView != nullptr && res.imageView->handle(binding.view) != VK_NULL_HANDLE) {
-            descriptors[i].image.sampler     = VK_NULL_HANDLE;
-            descriptors[i].image.imageView   = res.imageView->handle(binding.view);
-            descriptors[i].image.imageLayout = res.imageView->imageInfo().layout;
-            
-            if (m_rcTracked.set(binding.slot)) {
-              m_cmd->trackResource<DxvkAccess::None>(res.imageView);
-              m_cmd->trackResource<DxvkAccess::Write>(res.imageView->image());
-            }
-          } else {
-            bindMask.clr(i);
-            descriptors[i].image = m_common->dummyResources().imageViewDescriptor(binding.view, false);
-          } break;
-        
-        case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-          if (res.sampler != nullptr && res.imageView != nullptr
-           && res.imageView->handle(binding.view) != VK_NULL_HANDLE) {
-            descriptors[i].image.sampler     = res.sampler->handle();
-            descriptors[i].image.imageView   = res.imageView->handle(binding.view);
-            descriptors[i].image.imageLayout = res.imageView->imageInfo().layout;
-            
-            if (m_rcTracked.set(binding.slot)) {
-              m_cmd->trackResource<DxvkAccess::None>(res.sampler);
-              m_cmd->trackResource<DxvkAccess::None>(res.imageView);
-              m_cmd->trackResource<DxvkAccess::Read>(res.imageView->image());
-            }
-          } else {
-            bindMask.clr(i);
-            descriptors[i].image = m_common->dummyResources().imageSamplerDescriptor(binding.view);
-          } break;
-        
-        case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
-          if (res.bufferView != nullptr) {
-            res.bufferView->updateView();
-            descriptors[i].texelBuffer = res.bufferView->handle();
-            
-            if (m_rcTracked.set(binding.slot)) {
-              m_cmd->trackResource<DxvkAccess::None>(res.bufferView);
-              m_cmd->trackResource<DxvkAccess::Read>(res.bufferView->buffer());
-            }
-          } else {
-            bindMask.clr(i);
-            descriptors[i].texelBuffer = m_common->dummyResources().bufferViewDescriptor();
-          } break;
-        
-        case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-          if (res.bufferView != nullptr) {
-            res.bufferView->updateView();
-            descriptors[i].texelBuffer = res.bufferView->handle();
-            
-            if (m_rcTracked.set(binding.slot)) {
-              m_cmd->trackResource<DxvkAccess::None>(res.bufferView);
-              m_cmd->trackResource<DxvkAccess::Write>(res.bufferView->buffer());
-            }
-          } else {
-            bindMask.clr(i);
-            descriptors[i].texelBuffer = m_common->dummyResources().bufferViewDescriptor();
-          } break;
-        
-        case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
-          if (res.bufferSlice.defined()) {
-            descriptors[i] = res.bufferSlice.getDescriptor();
-            
-            if (m_rcTracked.set(binding.slot))
-              m_cmd->trackResource<DxvkAccess::Read>(res.bufferSlice.buffer());
-          } else {
-            bindMask.clr(i);
-            descriptors[i].buffer = m_common->dummyResources().bufferDescriptor();
-          } break;
-        
-        case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-          if (res.bufferSlice.defined()) {
-            descriptors[i] = res.bufferSlice.getDescriptor();
-            
-            if (m_rcTracked.set(binding.slot))
-              m_cmd->trackResource<DxvkAccess::Write>(res.bufferSlice.buffer());
-          } else {
-            bindMask.clr(i);
-            descriptors[i].buffer = m_common->dummyResources().bufferDescriptor();
-          } break;
-        
-        case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
-          if (res.bufferSlice.defined()) {
-            descriptors[i] = res.bufferSlice.getDescriptor();
-            descriptors[i].buffer.offset = 0;
-            
-            if (m_rcTracked.set(binding.slot))
-              m_cmd->trackResource<DxvkAccess::Read>(res.bufferSlice.buffer());
-          } else {
-            bindMask.clr(i);
-            descriptors[i].buffer = m_common->dummyResources().bufferDescriptor();
-          } break;
-        
-        default:
-          Logger::err(str::format("DxvkContext: Unhandled descriptor type: ", binding.type));
-      }
-    }
-
-    // Allocate and update descriptor set
-    auto& set = BindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS ? m_gpSet : m_cpSet;
-
-    if (layout->bindingCount()) {
-      set = allocateDescriptorSet(layout->descriptorSetLayout());
-
-      m_cmd->updateDescriptorSetWithTemplate(set,
-        layout->descriptorTemplate(), descriptors.data());
-    } else {
-      set = VK_NULL_HANDLE;
-    }
-
-    // Select the active binding mask to update
-    auto& refMask = BindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS
+    // This relies on the bind mask being cleared when the pipeline layout changes.
+    DxvkBindingMask& refBindMask = BindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS
       ? m_state.gp.state.bsBindingMask
       : m_state.cp.state.bsBindingMask;
 
-    // If some resources are not bound, we may need to
-    // update spec constants and rebind the pipeline
-    if (refMask != bindMask) {
-      refMask = bindMask;
+    DxvkBindingMask newBindMask = refBindMask;
+
+    uint32_t layoutSetMask = layout->getSetMask();
+
+    uint32_t dirtySetMask = BindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS
+      ? m_descriptorState.getDirtyGraphicsSets()
+      : m_descriptorState.getDirtyComputeSets();
+    dirtySetMask &= layoutSetMask;
+
+    uint32_t bindCount = 0;
+    uint32_t k = 0;
+
+    std::array<VkDescriptorSet, DxvkDescriptorSets::SetCount> sets;
+    m_descriptorPool->alloc(layout, dirtySetMask, sets.data());
+
+    while (dirtySetMask) {
+      uint32_t setIndex = bit::tzcnt(dirtySetMask);
+
+      // Initialize binding mask for the current set, only
+      // clear bits if certain resources are actually unbound.
+      uint32_t bindingIndex = layout->getFirstBinding(setIndex);
+      uint32_t bindingCount = bindings.getBindingCount(setIndex);
+
+      newBindMask.setRange(bindingIndex, bindingCount);
+
+      VkDescriptorSet set = sets[setIndex];
+
+      for (uint32_t j = 0; j < bindingCount; j++) {
+        const auto& binding = bindings.getBinding(setIndex, j);
+
+        if (!useDescriptorTemplates) {
+          m_descriptorWrites[k].dstSet = set;
+          m_descriptorWrites[k].dstBinding = j;
+          m_descriptorWrites[k].descriptorType = binding.descriptorType;
+        }
+
+        switch (binding.descriptorType) {
+          case VK_DESCRIPTOR_TYPE_SAMPLER: {
+            const auto& res = m_rc[binding.resourceBinding];
+
+            if (res.sampler != nullptr) {
+              m_descriptors[k].image.sampler     = res.sampler->handle();
+              m_descriptors[k].image.imageView   = VK_NULL_HANDLE;
+              m_descriptors[k].image.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+              if (m_rcTracked.set(binding.resourceBinding))
+                m_cmd->trackResource<DxvkAccess::None>(res.sampler);
+            } else {
+              m_descriptors[k].image = m_common->dummyResources().samplerDescriptor();
+            }
+          } break;
+
+          case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE: {
+            const auto& res = m_rc[binding.resourceBinding];
+
+            if (res.imageView != nullptr && res.imageView->handle(binding.viewType) != VK_NULL_HANDLE) {
+              m_descriptors[k].image.sampler     = VK_NULL_HANDLE;
+              m_descriptors[k].image.imageView   = res.imageView->handle(binding.viewType);
+              m_descriptors[k].image.imageLayout = res.imageView->imageInfo().layout;
+
+              if (m_rcTracked.set(binding.resourceBinding)) {
+                m_cmd->trackResource<DxvkAccess::None>(res.imageView);
+                m_cmd->trackResource<DxvkAccess::Read>(res.imageView->image());
+              }
+            } else {
+              m_descriptors[k].image = m_common->dummyResources().imageViewDescriptor(binding.viewType, true);
+              newBindMask.clr(bindingIndex + j);
+            }
+          } break;
+
+          case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE: {
+            const auto& res = m_rc[binding.resourceBinding];
+
+            if (res.imageView != nullptr && res.imageView->handle(binding.viewType) != VK_NULL_HANDLE) {
+              m_descriptors[k].image.sampler     = VK_NULL_HANDLE;
+              m_descriptors[k].image.imageView   = res.imageView->handle(binding.viewType);
+              m_descriptors[k].image.imageLayout = res.imageView->imageInfo().layout;
+
+              if (m_rcTracked.set(binding.resourceBinding)) {
+                m_cmd->trackResource<DxvkAccess::None>(res.imageView);
+                m_cmd->trackResource<DxvkAccess::Write>(res.imageView->image());
+              }
+            } else {
+              m_descriptors[k].image = m_common->dummyResources().imageViewDescriptor(binding.viewType, false);
+              newBindMask.clr(bindingIndex + j);
+            }
+          } break;
+
+          case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: {
+            const auto& res = m_rc[binding.resourceBinding];
+
+            if (res.sampler != nullptr && res.imageView != nullptr
+            && res.imageView->handle(binding.viewType) != VK_NULL_HANDLE) {
+              m_descriptors[k].image.sampler     = res.sampler->handle();
+              m_descriptors[k].image.imageView   = res.imageView->handle(binding.viewType);
+              m_descriptors[k].image.imageLayout = res.imageView->imageInfo().layout;
+
+              if (m_rcTracked.set(binding.resourceBinding)) {
+                m_cmd->trackResource<DxvkAccess::None>(res.sampler);
+                m_cmd->trackResource<DxvkAccess::None>(res.imageView);
+                m_cmd->trackResource<DxvkAccess::Read>(res.imageView->image());
+              }
+            } else {
+              m_descriptors[k].image = m_common->dummyResources().imageSamplerDescriptor(binding.viewType);
+              newBindMask.clr(bindingIndex + j);
+            }
+          } break;
+
+          case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER: {
+            const auto& res = m_rc[binding.resourceBinding];
+
+            if (res.bufferView != nullptr) {
+              res.bufferView->updateView();
+              m_descriptors[k].texelBuffer = res.bufferView->handle();
+
+              if (m_rcTracked.set(binding.resourceBinding)) {
+                m_cmd->trackResource<DxvkAccess::None>(res.bufferView);
+                m_cmd->trackResource<DxvkAccess::Read>(res.bufferView->buffer());
+              }
+            } else {
+              m_descriptors[k].texelBuffer = m_common->dummyResources().bufferViewDescriptor();
+              newBindMask.clr(bindingIndex + j);
+            }
+          } break;
+
+          case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER: {
+            const auto& res = m_rc[binding.resourceBinding];
+
+            if (res.bufferView != nullptr) {
+              res.bufferView->updateView();
+              m_descriptors[k].texelBuffer = res.bufferView->handle();
+
+              if (m_rcTracked.set(binding.resourceBinding)) {
+                m_cmd->trackResource<DxvkAccess::None>(res.bufferView);
+                m_cmd->trackResource<DxvkAccess::Write>(res.bufferView->buffer());
+              }
+            } else {
+              m_descriptors[k].texelBuffer = m_common->dummyResources().bufferViewDescriptor();
+              newBindMask.clr(bindingIndex + j);
+            }
+          } break;
+
+          case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER: {
+            const auto& res = m_rc[binding.resourceBinding];
+
+            if (res.bufferSlice.defined()) {
+              m_descriptors[k] = res.bufferSlice.getDescriptor();
+
+              if (m_rcTracked.set(binding.resourceBinding))
+                m_cmd->trackResource<DxvkAccess::Read>(res.bufferSlice.buffer());
+            } else {
+              m_descriptors[k].buffer = m_common->dummyResources().bufferDescriptor();
+            }
+          } break;
+
+          case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER: {
+            const auto& res = m_rc[binding.resourceBinding];
+
+            if (res.bufferSlice.defined()) {
+              m_descriptors[k] = res.bufferSlice.getDescriptor();
+
+              if (m_rcTracked.set(binding.resourceBinding))
+                m_cmd->trackResource<DxvkAccess::Write>(res.bufferSlice.buffer());
+            } else {
+              m_descriptors[k].buffer = m_common->dummyResources().bufferDescriptor();
+              newBindMask.clr(bindingIndex + j);
+            }
+          } break;
+
+          default:
+            break;
+        }
+
+        k += 1;
+      }
+
+      if (useDescriptorTemplates) {
+        m_cmd->updateDescriptorSetWithTemplate(set,
+          layout->getSetUpdateTemplate(setIndex),
+          &m_descriptors[k - bindingCount]);
+      }
+
+      bindCount += 1;
+
+      // If the next set is not dirty, update and bind all previously
+      // updated sets in one go in order to reduce api call overhead.
+      if (!(dirtySetMask & (1u << (setIndex + 1)))) {
+        if (!useDescriptorTemplates) {
+          m_cmd->updateDescriptorSets(k, m_descriptorWrites.data());
+          k = 0;
+        }
+
+        uint32_t firstSet = setIndex + 1 - bindCount;
+
+        m_cmd->cmdBindDescriptorSets(BindPoint,
+          layout->getPipelineLayout(),
+          firstSet, bindCount, &sets[firstSet],
+          0, nullptr);
+
+        bindCount = 0;
+      }
+
+      dirtySetMask &= dirtySetMask - 1;
+    }
+
+    // Update pipeline if there are unbound resources
+    if (refBindMask != newBindMask) {
+      refBindMask = newBindMask;
 
       m_flags.set(BindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS
         ? DxvkContextFlag::GpDirtyPipelineState
         : DxvkContextFlag::CpDirtyPipelineState);
     }
   }
+
+
+  void DxvkContext::updateComputeShaderResources() {
+    this->updateResourceBindings<VK_PIPELINE_BIND_POINT_COMPUTE>(m_state.cp.pipeline->getBindings());
+
+    m_descriptorState.clearStages(VK_SHADER_STAGE_COMPUTE_BIT);
+  }
   
   
-  template<VkPipelineBindPoint BindPoint>
-  void DxvkContext::updateShaderDescriptorSetBinding(
-          VkDescriptorSet         set,
-    const DxvkPipelineLayout*     layout) {
-    if (set) {
-      std::array<uint32_t, MaxNumActiveBindings> offsets;
+  void DxvkContext::updateGraphicsShaderResources() {
+    this->updateResourceBindings<VK_PIPELINE_BIND_POINT_GRAPHICS>(m_state.gp.pipeline->getBindings());
 
-      for (uint32_t i = 0; i < layout->dynamicBindingCount(); i++) {
-        const auto& binding = layout->dynamicBinding(i);
-        const auto& res     = m_rc[binding.slot];
-
-        offsets[i] = res.bufferSlice.defined()
-          ? res.bufferSlice.getDynamicOffset()
-          : 0;
-      }
-      
-      m_cmd->cmdBindDescriptorSet(BindPoint,
-        layout->pipelineLayout(), set,
-        layout->dynamicBindingCount(),
-        offsets.data());
-    }
+    m_descriptorState.clearStages(VK_SHADER_STAGE_ALL_GRAPHICS);
   }
   
   
@@ -4709,9 +4671,6 @@ namespace dxvk {
 
   
   void DxvkContext::updateDynamicState() {
-    if (!m_gpActivePipeline)
-      return;
-    
     if (m_flags.test(DxvkContextFlag::GpDirtyViewport)) {
       m_flags.clr(DxvkContextFlag::GpDirtyViewport);
 
@@ -4760,19 +4719,17 @@ namespace dxvk {
   void DxvkContext::updatePushConstants() {
     m_flags.clr(DxvkContextFlag::DirtyPushConstants);
 
-    auto layout = BindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS
-      ? m_state.gp.pipeline->layout()
-      : m_state.cp.pipeline->layout();
+    auto bindings = BindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS
+      ? m_state.gp.pipeline->getBindings()
+      : m_state.cp.pipeline->getBindings();
     
-    if (!layout)
-      return;
-    
-    VkPushConstantRange pushConstRange = layout->pushConstRange();
+    VkPushConstantRange pushConstRange = bindings->layout().getPushConstantRange();
+
     if (!pushConstRange.size)
       return;
     
     m_cmd->cmdPushConstants(
-      layout->pipelineLayout(),
+      bindings->getPipelineLayout(),
       pushConstRange.stageFlags,
       pushConstRange.offset,
       pushConstRange.size,
@@ -4788,9 +4745,7 @@ namespace dxvk {
         return false;
     }
     
-    if (m_flags.any(
-          DxvkContextFlag::CpDirtyResources,
-          DxvkContextFlag::CpDirtyDescriptorBinding))
+    if (m_descriptorState.hasDirtyComputeSets())
       this->updateComputeShaderResources();
 
     if (m_flags.test(DxvkContextFlag::CpDirtyPipelineState)) {
@@ -4832,9 +4787,7 @@ namespace dxvk {
     if (m_flags.test(DxvkContextFlag::GpDirtyVertexBuffers))
       this->updateVertexBufferBindings();
     
-    if (m_flags.any(
-          DxvkContextFlag::GpDirtyResources,
-          DxvkContextFlag::GpDirtyDescriptorBinding))
+    if (m_descriptorState.hasDirtyGraphicsSets())
       this->updateGraphicsShaderResources();
     
     if (m_flags.test(DxvkContextFlag::GpDirtyPipelineState)) {
@@ -4864,58 +4817,66 @@ namespace dxvk {
   
   
   void DxvkContext::commitComputeInitBarriers() {
-    auto layout = m_state.cp.pipeline->layout();
+    const auto& layout = m_state.cp.pipeline->getBindings()->layout();
 
     bool requiresBarrier = false;
 
-    for (uint32_t i = 0; i < layout->bindingCount() && !requiresBarrier; i++) {
-      if (m_state.cp.state.bsBindingMask.test(i)) {
-        const DxvkDescriptorSlot binding = layout->binding(i);
-        const DxvkShaderResourceSlot& slot = m_rc[binding.slot];
+    uint32_t index = 0;
 
-        DxvkAccessFlags dstAccess = DxvkBarrierSet::getAccessTypes(binding.access);
-        DxvkAccessFlags srcAccess = 0;
-        
-        switch (binding.type) {
-          case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-          case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
-          case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
-            srcAccess = m_execBarriers.getBufferAccess(
-              slot.bufferSlice.getSliceHandle());
-            break;
-        
-          case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-          case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
-            srcAccess = m_execBarriers.getBufferAccess(
-              slot.bufferView->getSliceHandle());
-            break;
+    for (uint32_t i = 0; i < DxvkDescriptorSets::SetCount && !requiresBarrier; i++) {
+      uint32_t bindingCount = layout.getBindingCount(i);
+
+      for (uint32_t j = 0; j < bindingCount && !requiresBarrier; j++) {
+        if (m_state.cp.state.bsBindingMask.test(index + j)) {
+          const DxvkBindingInfo& binding = layout.getBinding(i, j);
+          const DxvkShaderResourceSlot& slot = m_rc[binding.resourceBinding];
+
+          DxvkAccessFlags dstAccess = DxvkBarrierSet::getAccessTypes(binding.access);
+          DxvkAccessFlags srcAccess = 0;
           
-          case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-          case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-          case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-            srcAccess = m_execBarriers.getImageAccess(
-              slot.imageView->image(),
-              slot.imageView->imageSubresources());
-            break;
+          switch (binding.descriptorType) {
+            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+              srcAccess = m_execBarriers.getBufferAccess(
+                slot.bufferSlice.getSliceHandle());
+              break;
+          
+            case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+            case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+              srcAccess = m_execBarriers.getBufferAccess(
+                slot.bufferView->getSliceHandle());
+              break;
+            
+            case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+            case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+            case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+              srcAccess = m_execBarriers.getImageAccess(
+                slot.imageView->image(),
+                slot.imageView->imageSubresources());
+              break;
 
-          default:
-            /* nothing to do */;
+            default:
+              /* nothing to do */;
+          }
+
+          if (srcAccess == 0)
+            continue;
+
+          // Skip write-after-write barriers if explicitly requested
+          VkPipelineStageFlags stageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                                        | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+
+          if ((m_barrierControl.test(DxvkBarrierControl::IgnoreWriteAfterWrite))
+          && (!(m_execBarriers.getSrcStages() & ~stageMask))
+          && ((srcAccess | dstAccess) == DxvkAccess::Write))
+            continue;
+
+          requiresBarrier = (srcAccess | dstAccess).test(DxvkAccess::Write);
         }
-
-        if (srcAccess == 0)
-          continue;
-
-        // Skip write-after-write barriers if explicitly requested
-        VkPipelineStageFlags stageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
-                                       | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
-
-        if ((m_barrierControl.test(DxvkBarrierControl::IgnoreWriteAfterWrite))
-         && (!(m_execBarriers.getSrcStages() & ~stageMask))
-         && ((srcAccess | dstAccess) == DxvkAccess::Write))
-          continue;
-
-        requiresBarrier = (srcAccess | dstAccess).test(DxvkAccess::Write);
       }
+
+      index += bindingCount;
     }
 
     if (requiresBarrier)
@@ -4924,53 +4885,60 @@ namespace dxvk {
   
 
   void DxvkContext::commitComputePostBarriers() {
-    auto layout = m_state.cp.pipeline->layout();
-    
-    for (uint32_t i = 0; i < layout->bindingCount(); i++) {
-      if (m_state.cp.state.bsBindingMask.test(i)) {
-        const DxvkDescriptorSlot binding = layout->binding(i);
-        const DxvkShaderResourceSlot& slot = m_rc[binding.slot];
+    const auto& layout = m_state.cp.pipeline->getBindings()->layout();
+    uint32_t index = 0;
 
-        VkPipelineStageFlags stages = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-        VkAccessFlags        access = binding.access;
-        
-        switch (binding.type) {
-          case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-          case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
-          case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
-            m_execBarriers.accessBuffer(
-              slot.bufferSlice.getSliceHandle(),
-              stages, access,
-              slot.bufferSlice.bufferInfo().stages,
-              slot.bufferSlice.bufferInfo().access);
-            break;
-        
-          case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-          case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
-            m_execBarriers.accessBuffer(
-              slot.bufferView->getSliceHandle(),
-              stages, access,
-              slot.bufferView->bufferInfo().stages,
-              slot.bufferView->bufferInfo().access);
-            break;
+    for (uint32_t i = 0; i < DxvkDescriptorSets::SetCount; i++) {
+      uint32_t bindingCount = layout.getBindingCount(i);
+
+      for (uint32_t j = 0; j < bindingCount; j++) {
+        if (m_state.cp.state.bsBindingMask.test(index + j)) {
+          const DxvkBindingInfo& binding = layout.getBinding(i, j);
+          const DxvkShaderResourceSlot& slot = m_rc[binding.resourceBinding];
+
+          VkPipelineStageFlags stages = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+          VkAccessFlags        access = binding.access;
           
-          case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-          case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-          case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-            m_execBarriers.accessImage(
-              slot.imageView->image(),
-              slot.imageView->imageSubresources(),
-              slot.imageView->imageInfo().layout,
-              stages, access,
-              slot.imageView->imageInfo().layout,
-              slot.imageView->imageInfo().stages,
-              slot.imageView->imageInfo().access);
-            break;
+          switch (binding.descriptorType) {
+            case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+            case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+              m_execBarriers.accessBuffer(
+                slot.bufferSlice.getSliceHandle(),
+                stages, access,
+                slot.bufferSlice.bufferInfo().stages,
+                slot.bufferSlice.bufferInfo().access);
+              break;
+          
+            case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+            case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+              m_execBarriers.accessBuffer(
+                slot.bufferView->getSliceHandle(),
+                stages, access,
+                slot.bufferView->bufferInfo().stages,
+                slot.bufferView->bufferInfo().access);
+              break;
+            
+            case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+            case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+            case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+              m_execBarriers.accessImage(
+                slot.imageView->image(),
+                slot.imageView->imageSubresources(),
+                slot.imageView->imageInfo().layout,
+                stages, access,
+                slot.imageView->imageInfo().layout,
+                slot.imageView->imageInfo().stages,
+                slot.imageView->imageInfo().access);
+              break;
 
-          default:
-            /* nothing to do */;
+            default:
+              /* nothing to do */;
+          }
         }
       }
+
+      index += bindingCount;
     }
   }
   
@@ -4979,8 +4947,6 @@ namespace dxvk {
   void DxvkContext::commitGraphicsBarriers() {
     if (m_barrierControl.test(DxvkBarrierControl::IgnoreGraphicsBarriers))
       return;
-
-    auto layout = m_state.gp.pipeline->layout();
 
     constexpr auto storageBufferAccess = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFORM_FEEDBACK_WRITE_BIT_EXT;
     constexpr auto storageImageAccess  = VK_ACCESS_SHADER_WRITE_BIT;
@@ -5059,56 +5025,62 @@ namespace dxvk {
     }
 
     // Check shader resources on every draw to handle WAW hazards
-    for (uint32_t i = 0; i < layout->bindingCount() && !requiresBarrier; i++) {
-      const DxvkDescriptorSlot binding = layout->binding(i);
-      const DxvkShaderResourceSlot& slot = m_rc[binding.slot];
+    auto layout = m_state.gp.pipeline->getBindings()->layout();
 
-      DxvkAccessFlags dstAccess = DxvkBarrierSet::getAccessTypes(binding.access);
-      DxvkAccessFlags srcAccess = 0;
-      
-      switch (binding.type) {
-        case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-        case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
-        case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
-          if ((slot.bufferSlice.defined())
-           && (slot.bufferSlice.bufferInfo().access & storageBufferAccess)) {
-            srcAccess = this->checkGfxBufferBarrier<DoEmit>(slot.bufferSlice,
-              binding.stages, binding.access);
-          }
-          break;
+    for (uint32_t i = 0; i < DxvkDescriptorSets::SetCount; i++) {
+      uint32_t bindingCount = layout.getBindingCount(i);
 
-        case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-        case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
-          if ((slot.bufferView != nullptr)
-           && (slot.bufferView->bufferInfo().access & storageBufferAccess)) {
-            srcAccess = this->checkGfxBufferBarrier<DoEmit>(slot.bufferView->slice(),
-              binding.stages, binding.access);
-          }
-          break;
+      for (uint32_t j = 0; j < bindingCount && !requiresBarrier; j++) {
+        const DxvkBindingInfo& binding = layout.getBinding(i, j);
+        const DxvkShaderResourceSlot& slot = m_rc[binding.resourceBinding];
 
-        case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-        case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-        case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-          if ((slot.imageView != nullptr)
-           && (slot.imageView->imageInfo().access & storageImageAccess)) {
-            srcAccess = this->checkGfxImageBarrier<DoEmit>(slot.imageView,
-              binding.stages, binding.access);
-          }
-          break;
+        DxvkAccessFlags dstAccess = DxvkBarrierSet::getAccessTypes(binding.access);
+        DxvkAccessFlags srcAccess = 0;
+        
+        switch (binding.descriptorType) {
+          case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+          case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+          case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+            if ((slot.bufferSlice.defined())
+             && (slot.bufferSlice.bufferInfo().access & storageBufferAccess)) {
+               srcAccess = this->checkGfxBufferBarrier<DoEmit>(slot.bufferSlice,
+                 util::pipelineStages(binding.stages), binding.access);
+            }
+            break;
 
-        default:
-          /* nothing to do */;
+          case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+          case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+            if ((slot.bufferView != nullptr)
+             && (slot.bufferView->bufferInfo().access & storageBufferAccess)) {
+               srcAccess = this->checkGfxBufferBarrier<DoEmit>(slot.bufferView->slice(),
+                 util::pipelineStages(binding.stages), binding.access);
+            }
+            break;
+
+          case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+          case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+          case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+            if ((slot.imageView != nullptr)
+             && (slot.imageView->imageInfo().access & storageImageAccess)) {
+               srcAccess = this->checkGfxImageBarrier<DoEmit>(slot.imageView,
+                 util::pipelineStages(binding.stages), binding.access);
+            }
+            break;
+
+          default:
+            /* nothing to do */;
+        }
+
+        if (srcAccess == 0)
+          continue;
+
+        // Skip write-after-write barriers if explicitly requested
+        if ((m_barrierControl.test(DxvkBarrierControl::IgnoreWriteAfterWrite))
+          && ((srcAccess | dstAccess) == DxvkAccess::Write))
+          continue;
+
+        requiresBarrier = (srcAccess | dstAccess).test(DxvkAccess::Write);
       }
-
-      if (srcAccess == 0)
-        continue;
-
-      // Skip write-after-write barriers if explicitly requested
-      if ((m_barrierControl.test(DxvkBarrierControl::IgnoreWriteAfterWrite))
-        && ((srcAccess | dstAccess) == DxvkAccess::Write))
-        continue;
-
-      requiresBarrier = (srcAccess | dstAccess).test(DxvkAccess::Write);
     }
 
     // External subpass dependencies serve as full memory
@@ -5180,24 +5152,6 @@ namespace dxvk {
   }
 
 
-  VkDescriptorSet DxvkContext::allocateDescriptorSet(
-          VkDescriptorSetLayout     layout) {
-    if (m_descPool == nullptr)
-      m_descPool = m_device->createDescriptorPool();
-    
-    VkDescriptorSet set = m_descPool->alloc(layout);
-
-    if (set == VK_NULL_HANDLE) {
-      m_cmd->trackDescriptorPool(std::move(m_descPool));
-
-      m_descPool = m_device->createDescriptorPool();
-      set = m_descPool->alloc(layout);
-    }
-
-    return set;
-  }
-
-  
   void DxvkContext::trackDrawBuffer() {
     if (m_flags.test(DxvkContextFlag::DirtyDrawBuffer)) {
       m_flags.clr(DxvkContextFlag::DirtyDrawBuffer);
