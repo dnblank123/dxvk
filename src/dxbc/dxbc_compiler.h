@@ -184,7 +184,7 @@ namespace dxvk {
     uint32_t builtinLaneId        = 0;
     uint32_t killState            = 0;
 
-    uint32_t specRsSampleCount    = 0;
+    uint32_t pushConstantId       = 0;
   };
   
   
@@ -348,7 +348,6 @@ namespace dxvk {
     DxbcResourceType type;
     uint32_t typeId;
     uint32_t varId;
-    uint32_t specId;
     uint32_t stride;
     uint32_t align;
   };
@@ -1198,6 +1197,8 @@ namespace dxvk {
     
     uint32_t emitBuiltinTessLevelInner(
             spv::StorageClass storageClass);
+
+    uint32_t emitPushConstants();
 
     ////////////////////////////////
     // Extension enablement methods

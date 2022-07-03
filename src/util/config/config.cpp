@@ -314,6 +314,11 @@ namespace dxvk {
     { R"(\\AWayOut(_friend)?\.exe$)", {{
       { "dxgi.maxFrameLatency",                "1" },
     }} },
+    /* Garden Warfare 2
+       Won't start on amd Id without atiadlxx     */
+    { R"(\\GW2.Main_Win64_Retail\.exe$)", {{
+      { "dxgi.customVendorId",           "10de"   },
+    }} },
 
     /**********************************************/
     /* D3D9 GAMES                                 */
@@ -590,6 +595,11 @@ namespace dxvk {
     /* Star Wars The Old Republic */
     { R"(\\swtor\.exe$)", {{
       { "d3d9.forceSamplerTypeSpecConstants", "True" },
+    }} },
+    /* Bionic Commando                          
+       Physics break at high fps               */
+    { R"(\\bionic_commando\.exe$)", {{
+      { "d3d9.maxFrameRate",                "60" },
     }} },
   }};
 

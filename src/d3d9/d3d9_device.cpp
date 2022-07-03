@@ -1066,7 +1066,7 @@ namespace dxvk {
           ctx->resolveDepthStencilImage(
             cDstImage, cSrcImage, cRegion,
             VK_RESOLVE_MODE_AVERAGE_BIT_KHR,
-            VK_RESOLVE_MODE_AVERAGE_BIT_KHR);
+            VK_RESOLVE_MODE_SAMPLE_ZERO_BIT_KHR);
         }
       });
     };
@@ -3903,9 +3903,6 @@ namespace dxvk {
     enabled.extVertexAttributeDivisor.vertexAttributeInstanceRateDivisor = supported.extVertexAttributeDivisor.vertexAttributeInstanceRateDivisor;
     enabled.extVertexAttributeDivisor.vertexAttributeInstanceRateZeroDivisor = supported.extVertexAttributeDivisor.vertexAttributeInstanceRateZeroDivisor;
 
-    // Null Descriptors
-    enabled.extRobustness2.nullDescriptor = supported.extRobustness2.nullDescriptor;
-
     // ProcessVertices
     enabled.core.features.vertexPipelineStoresAndAtomics = supported.core.features.vertexPipelineStoresAndAtomics;
 
@@ -6203,17 +6200,6 @@ namespace dxvk {
     if (m_flags.test(D3D9DeviceFlag::DirtyInputLayout))
       BindInputLayout();
 
-    auto UpdateSamplerTypes = [&](uint32_t types, uint32_t projections, uint32_t fetch4) {
-      if (m_lastSamplerTypes != types)
-        UpdateSamplerSpecConsant(types);
-
-      if (m_lastProjectionBitfield != projections)
-        UpdateProjectionSpecConstant(projections);
-
-      if (m_lastFetch4 != fetch4)
-        UpdateFetch4SpecConstant(fetch4);
-    };
-
     if (likely(UseProgrammablePS())) {
       UploadConstants<DxsoProgramTypes::PixelShader>();
 
@@ -6224,9 +6210,9 @@ namespace dxvk {
       const auto& programInfo = GetCommonShader(m_state.pixelShader)->GetInfo();
 
       if (programInfo.majorVersion() >= 2)
-        UpdateSamplerTypes(m_d3d9Options.forceSamplerTypeSpecConstants ? m_textureTypes : 0u, 0u, fetch4);
+        UpdatePsSamplerSpecConstants(m_d3d9Options.forceSamplerTypeSpecConstants ? m_textureTypes : 0u, 0u, fetch4);
       else
-        UpdateSamplerTypes(m_textureTypes, programInfo.minorVersion() >= 4 ? 0u : projected, fetch4); // For implicit samplers...
+        UpdatePsSamplerSpecConstants(m_textureTypes, programInfo.minorVersion() >= 4 ? 0u : projected, fetch4); // For implicit samplers...
 
       UpdateBoolSpecConstantPixel(
         m_state.psConsts.bConsts[0] &
@@ -6234,14 +6220,14 @@ namespace dxvk {
     }
     else {
       UpdateBoolSpecConstantPixel(0);
-      UpdateSamplerTypes(0u, 0u, 0u);
+      UpdatePsSamplerSpecConstants(0u, 0u, 0u);
 
       UpdateFixedFunctionPS();
     }
 
+    const uint32_t nullTextureMask = usedSamplerMask & ~usedTextureMask;
     const uint32_t depthTextureMask = m_depthTextures & usedTextureMask;
-    if (depthTextureMask != m_lastSamplerDepthMode)
-      UpdateSamplerDepthModeSpecConstant(depthTextureMask);
+    UpdateCommonSamplerSpecConstants(nullTextureMask, depthTextureMask);
 
     if (m_flags.test(D3D9DeviceFlag::DirtySharedPixelShaderData)) {
       m_flags.clr(D3D9DeviceFlag::DirtySharedPixelShaderData);
@@ -6925,39 +6911,38 @@ namespace dxvk {
   }
 
 
-  void D3D9DeviceEx::UpdateSamplerSpecConsant(uint32_t value) {
-    EmitCs([cBitfield = value](DxvkContext* ctx) {
-      ctx->setSpecConstant(VK_PIPELINE_BIND_POINT_GRAPHICS, D3D9SpecConstantId::SamplerType, cBitfield);
-    });
+  void D3D9DeviceEx::UpdatePsSamplerSpecConstants(uint32_t types, uint32_t projections, uint32_t fetch4) {
+    if (m_lastSamplerTypes != types || m_lastProjectionBitfield  != projections || m_lastFetch4 != fetch4) {
+      m_lastSamplerTypes = types;
+      m_lastProjectionBitfield  = projections;
+      m_lastFetch4 = fetch4;
 
-    m_lastSamplerTypes = value;
-  }
-
-
-  void D3D9DeviceEx::UpdateProjectionSpecConstant(uint32_t value) {
-    EmitCs([cBitfield = value](DxvkContext* ctx) {
-      ctx->setSpecConstant(VK_PIPELINE_BIND_POINT_GRAPHICS, D3D9SpecConstantId::ProjectionType, cBitfield);
-    });
-
-    m_lastProjectionBitfield = value;
-  }
-
-
-  void D3D9DeviceEx::UpdateFetch4SpecConstant(uint32_t value) {
-    EmitCs([cBitfield = value](DxvkContext* ctx) {
-      ctx->setSpecConstant(VK_PIPELINE_BIND_POINT_GRAPHICS, D3D9SpecConstantId::Fetch4, cBitfield);
+      EmitCs([
+        cSamplerType = types,
+        cProjectionType = projections,
+        cFetch4 = fetch4
+      ] (DxvkContext* ctx) {
+        ctx->setSpecConstant(VK_PIPELINE_BIND_POINT_GRAPHICS, D3D9SpecConstantId::SamplerType, cSamplerType);
+        ctx->setSpecConstant(VK_PIPELINE_BIND_POINT_GRAPHICS, D3D9SpecConstantId::ProjectionType, cProjectionType);
+        ctx->setSpecConstant(VK_PIPELINE_BIND_POINT_GRAPHICS, D3D9SpecConstantId::Fetch4, cFetch4);
       });
-
-    m_lastFetch4 = value;
+    }
   }
 
 
-  void D3D9DeviceEx::UpdateSamplerDepthModeSpecConstant(uint32_t value) {
-    EmitCs([cBitfield = value](DxvkContext* ctx) {
-      ctx->setSpecConstant(VK_PIPELINE_BIND_POINT_GRAPHICS, D3D9SpecConstantId::SamplerDepthMode, cBitfield);
-    });
+  void D3D9DeviceEx::UpdateCommonSamplerSpecConstants(uint32_t nullMask, uint32_t depthMask) {
+    if (m_lastSamplerNull != nullMask || m_lastSamplerDepthMode != depthMask) {
+      m_lastSamplerNull = nullMask;
+      m_lastSamplerDepthMode = depthMask;
 
-    m_lastSamplerDepthMode = value;
+      EmitCs([
+        cNullMask = nullMask,
+        cDepthMask = depthMask
+      ] (DxvkContext* ctx) {
+        ctx->setSpecConstant(VK_PIPELINE_BIND_POINT_GRAPHICS, D3D9SpecConstantId::SamplerNull, cNullMask);
+        ctx->setSpecConstant(VK_PIPELINE_BIND_POINT_GRAPHICS, D3D9SpecConstantId::SamplerDepthMode, cDepthMask);
+      });
+    }
   }
 
 
@@ -7325,10 +7310,10 @@ namespace dxvk {
     // We should do this...
     m_flags.set(D3D9DeviceFlag::DirtyInputLayout);
 
-    UpdateSamplerSpecConsant(0u);
+    UpdatePsSamplerSpecConstants(0u, 0u, 0u);
     UpdateBoolSpecConstantVertex(0u);
     UpdateBoolSpecConstantPixel(0u);
-    UpdateSamplerDepthModeSpecConstant(0u);
+    UpdateCommonSamplerSpecConstants(0u, 0u);
 
     return D3D_OK;
   }
