@@ -6081,27 +6081,9 @@ namespace dxvk {
 
   void D3D9DeviceEx::PrepareDraw(D3DPRIMITIVETYPE PrimitiveType) {
     if (unlikely(m_activeHazardsRT != 0)) {
-      for (uint32_t rt = m_activeHazardsRT; rt; rt &= rt - 1) {
-        // Guaranteed to not be nullptr...
-        auto surface = m_state.renderTargets[bit::tzcnt(rt)];
-
-        const Rc<DxvkImage>& image =
-          surface->GetCommonTexture()->GetImage();
-
-        VkImageSubresourceRange subresources = {
-          VK_IMAGE_ASPECT_COLOR_BIT,
-          surface->GetMipLevel(), 1,
-          surface->GetFace(),     1
-        };
-
-        EmitCs([
-          cImage        = image,
-          cSubresources = subresources
-        ](DxvkContext* ctx) {
-          ctx->emitRenderTargetReadbackBarrier(
-            cImage, cSubresources);
-        });
-      }
+      EmitCs([](DxvkContext* ctx) {
+        ctx->emitRenderTargetReadbackBarrier();
+      });
 
       if (m_d3d9Options.generalHazards)
         MarkRenderHazards();
