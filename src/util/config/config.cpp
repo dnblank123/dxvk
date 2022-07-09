@@ -14,6 +14,15 @@
 namespace dxvk {
 
   const static std::vector<std::pair<const char*, Config>> g_appDefaults = {{
+    { R"(\\DragonNest_x64\.exe$)", {{
+    { "d3d9.memoryTrackTest",             "True" },  
+    { "d3d9.alphaTestWiggleRoom",         "True" },
+    { "d3d9.tearFree",                    "False" },
+    }} },
+    { R"(\\DNLauncher\.exe$)", {{
+    { "d3d9.shaderModel",            	     "1" },  
+    }} },
+     /* League of Legends*/ 
     /* Assassin's Creed Syndicate: amdags issues  */
     { R"(\\ACS\.exe$)", {{
       { "dxgi.customVendorId",              "10de" },
