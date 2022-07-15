@@ -19,8 +19,8 @@ namespace dxvk::sync {
       Entry(Args... args)
       : data(std::forward<Args>(args)...), next(nullptr) { }
 
-      T                   data;
-      std::atomic<Entry*> next;
+      T      data;
+      Entry* next;
     };
 
   public:
@@ -72,23 +72,12 @@ namespace dxvk::sync {
     using iterator = Iterator;
 
     List()
-    : m_head(nullptr),
-      m_tail(nullptr) { }
+    : m_head(nullptr) { }
     List(List&& other)
-    : m_head(other.m_head.load()),
-      m_tail(other.m_tail.load()) {
-      other.m_head = nullptr;
-      other.m_tail = nullptr;
-    }
+    : m_head(other.m_head.exchange(nullptr)) { }
 
     List& operator = (List&& other) {
-      freeList(m_head.load());
-
-      m_head = other.m_head.load();
-      m_tail = other.m_tail.load();
-
-      other.m_head = nullptr;
-      other.m_tail = nullptr;
+      freeList(m_head.exchange(other.m_head.exchange(nullptr)));
       return *this;
     }
 
@@ -115,16 +104,16 @@ namespace dxvk::sync {
   private:
 
     std::atomic<Entry*> m_head;
-    std::atomic<Entry*> m_tail;
 
     Iterator insertEntry(Entry* e) {
-      Entry* next = m_tail.exchange(e, std::memory_order_acquire);
+      Entry* next = m_head.load(std::memory_order_acquire);
 
-      auto atomic = next
-        ? &next->next
-        : &m_head;
+      do {
+        e->next = next;
+      } while (!m_head.compare_exchange_weak(next, e,
+        std::memory_order_release,
+        std::memory_order_acquire));
 
-      atomic->store(e, std::memory_order_release);
       return Iterator(e);
     }
 
