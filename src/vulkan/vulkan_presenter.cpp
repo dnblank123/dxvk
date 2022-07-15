@@ -86,7 +86,9 @@ namespace dxvk::vk {
 
     sync = m_semaphores.at(m_frameIndex);
 
-    m_acquireStatus = VK_NOT_READY;
+    m_acquireStatus = m_vkd->vkAcquireNextImageKHR(m_vkd->device(),
+      m_swapchain, std::numeric_limits<uint64_t>::max(),
+      sync.acquire, VK_NULL_HANDLE, &m_imageIndex);
 
     bool vsync = m_info.presentMode == VK_PRESENT_MODE_FIFO_KHR
               || m_info.presentMode == VK_PRESENT_MODE_FIFO_RELAXED_KHR;
