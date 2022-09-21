@@ -843,12 +843,7 @@ namespace dxvk {
     uint64_t sequenceNumber = GetCurrentSequenceNumber();
     pResource->TrackSequenceNumber(Subresource, sequenceNumber);
 
-    // Don't flush early on NV
-    if (!m_device->adapter()->matchesDriver(DxvkGpuVendor::Nvidia,
-                                            VK_DRIVER_ID_NVIDIA_PROPRIETARY,
-                                            0,
-                                            0))
-      FlushImplicit(TRUE);
+    FlushImplicit(TRUE);
   }
 
 
@@ -857,12 +852,7 @@ namespace dxvk {
     uint64_t sequenceNumber = GetCurrentSequenceNumber();
     pResource->TrackSequenceNumber(sequenceNumber);
 
-    // Don't flush early on NV
-    if (!m_device->adapter()->matchesDriver(DxvkGpuVendor::Nvidia,
-                                            VK_DRIVER_ID_NVIDIA_PROPRIETARY,
-                                            0,
-                                            0))
-      FlushImplicit(TRUE);
+    FlushImplicit(TRUE);
   }
 
 
