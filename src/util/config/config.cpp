@@ -482,7 +482,14 @@ namespace dxvk {
     }} },
     /* Dragon Nest                               */
     { R"(\\DragonNest_x64\.exe$)", {{
-      { "d3d9.memoryTrackTest ",            "True" },
+      { "d3d11.relaxedBarriers",            "True" },
+      { "d3d11.ignoreGraphicsBarriers",     "True" },
+      { "d3d11.cachedDynamicResources",     "a"    },
+      { "dxgi.tearFree",                   "False" },
+      { "dxgi.syncInterval",               "0" },
+      { "d3d11.invariantPosition",        "False" },
+      { "dxvk.enableGraphicsPipelineLibrary",        "False" },
+
     }} },
     /* Dal Segno                                 */
     { R"(\\DST\.exe$)", {{
