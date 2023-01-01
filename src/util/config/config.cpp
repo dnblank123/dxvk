@@ -491,6 +491,12 @@ namespace dxvk {
       { "dxvk.enableGraphicsPipelineLibrary",        "False" },
 
     }} },
+        /* PHDN                                 */
+    { R"(\\ProjectHunter_x64\.exe$)", {{
+      { "dxvk.enableGraphicsPipelineLibrary",        "False" },
+      { "d3d9.tearFree",                   "False" },
+      { "d3d9.invariantPosition",        "False" },
+    }} },
     /* Dal Segno                                 */
     { R"(\\DST\.exe$)", {{
       { "d3d9.deferSurfaceCreation",        "True" },
