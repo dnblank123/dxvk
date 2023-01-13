@@ -40,23 +40,6 @@ namespace dxvk {
   }
 
 
-  void DxvkPipelineWorkers::compileComputePipeline(
-          DxvkComputePipeline*            pipeline,
-    const DxvkComputePipelineStateInfo&   state) {
-    std::unique_lock lock(m_queueLock);
-    this->startWorkers();
-
-    m_pendingTasks += 1;
-
-    PipelineEntry e = { };
-    e.computePipeline = pipeline;
-    e.computeState = state;
-
-    m_queuedPipelines.push(e);
-    m_queueCond.notify_one();
-  }
-
-
   void DxvkPipelineWorkers::compileGraphicsPipeline(
           DxvkGraphicsPipeline*           pipeline,
     const DxvkGraphicsPipelineStateInfo&  state) {
@@ -176,9 +159,7 @@ namespace dxvk {
       }
 
       if (p) {
-        if (p->computePipeline) {
-          p->computePipeline->compilePipeline(p->computeState);
-        } else if (p->graphicsPipeline) {
+        if (p->graphicsPipeline) {
           p->graphicsPipeline->compilePipeline(p->graphicsState);
           p->graphicsPipeline->releasePipeline();
         }
@@ -248,8 +229,11 @@ namespace dxvk {
     if (pair != m_computePipelines.end())
       return &pair->second;
 
+    DxvkShaderPipelineLibraryKey key;
+    key.addShader(shaders.cs);
+
     auto layout = createPipelineLayout(shaders.cs->getBindings());
-    auto library = findPipelineLibraryLocked(shaders.cs);
+    auto library = findPipelineLibraryLocked(key);
 
     auto iter = m_computePipelines.emplace(
       std::piecewise_construct,
@@ -290,9 +274,45 @@ namespace dxvk {
     DxvkShaderPipelineLibrary* vsLibrary = nullptr;
     DxvkShaderPipelineLibrary* fsLibrary = nullptr;
 
-    if (shaders.tcs == nullptr && shaders.tes == nullptr && shaders.gs == nullptr) {
-      vsLibrary = findPipelineLibraryLocked(shaders.vs);
-      fsLibrary = findPipelineLibraryLocked(shaders.fs);
+    if (m_device->canUseGraphicsPipelineLibrary()) {
+      DxvkShaderPipelineLibraryKey vsKey;
+      vsKey.addShader(shaders.vs);
+
+      if (shaders.tcs != nullptr) vsKey.addShader(shaders.tcs);
+      if (shaders.tes != nullptr) vsKey.addShader(shaders.tes);
+      if (shaders.gs  != nullptr) vsKey.addShader(shaders.gs);
+
+      if (vsKey.canUsePipelineLibrary()) {
+        vsLibrary = findPipelineLibraryLocked(vsKey);
+
+        if (!vsLibrary) {
+          // If multiple shader stages are participating, create a
+          // pipeline library so that it can potentially be reused.
+          // Don't dispatch the pipeline library to a worker thread
+          // since it should be compiled on demand anyway.
+          vsLibrary = createPipelineLibraryLocked(vsKey);
+
+          // Register the pipeline library with the state cache
+          // so that subsequent runs can still compile it early
+          DxvkStateCacheKey shaderKeys;
+          shaderKeys.vs = shaders.vs->getShaderKey();
+
+          if (shaders.tcs != nullptr) shaderKeys.tcs = shaders.tcs->getShaderKey();
+          if (shaders.tes != nullptr) shaderKeys.tes = shaders.tes->getShaderKey();
+          if (shaders.gs  != nullptr) shaderKeys.gs  = shaders.gs->getShaderKey();
+
+          m_stateCache.addPipelineLibrary(shaderKeys);
+        }
+      }
+
+      if (vsLibrary) {
+        DxvkShaderPipelineLibraryKey fsKey;
+
+        if (shaders.fs != nullptr)
+          fsKey.addShader(shaders.fs);
+
+        fsLibrary = findPipelineLibraryLocked(fsKey);
+      }
     }
 
     auto iter = m_graphicsPipelines.emplace(
@@ -304,6 +324,13 @@ namespace dxvk {
   }
 
   
+  DxvkShaderPipelineLibrary* DxvkPipelineManager::createShaderPipelineLibrary(
+    const DxvkShaderPipelineLibraryKey& key) {
+    std::lock_guard<dxvk::mutex> lock(m_mutex);
+    return createPipelineLibraryLocked(key);
+  }
+
+
   DxvkGraphicsPipelineVertexInputLibrary* DxvkPipelineManager::createVertexInputLibrary(
     const DxvkGraphicsPipelineVertexInputState& state) {
     std::lock_guard<dxvk::mutex> lock(m_mutex);
@@ -339,7 +366,10 @@ namespace dxvk {
   void DxvkPipelineManager::registerShader(
     const Rc<DxvkShader>&         shader) {
     if (canPrecompileShader(shader)) {
-      auto library = createPipelineLibrary(shader);
+      DxvkShaderPipelineLibraryKey key;
+      key.addShader(shader);
+
+      auto library = createShaderPipelineLibrary(key);
       m_workers.compilePipelineLibrary(library, DxvkPipelinePriority::Normal);
     }
 
@@ -353,7 +383,10 @@ namespace dxvk {
       return;
 
     // Dispatch high-priority compile job
-    auto library = findPipelineLibrary(shader);
+    DxvkShaderPipelineLibraryKey key;
+    key.addShader(shader);
+
+    auto library = findPipelineLibrary(key);
 
     if (library)
       m_workers.compilePipelineLibrary(library, DxvkPipelinePriority::High);
@@ -415,47 +448,43 @@ namespace dxvk {
   }
 
 
-  DxvkShaderPipelineLibrary* DxvkPipelineManager::createPipelineLibrary(
-    const Rc<DxvkShader>&     shader) {
-    std::lock_guard<dxvk::mutex> lock(m_mutex);
-    auto layout = createPipelineLayout(shader->getBindings());
-
-    DxvkShaderPipelineLibraryKey key;
-    key.shader = shader;
+  DxvkShaderPipelineLibrary* DxvkPipelineManager::createPipelineLibraryLocked(
+    const DxvkShaderPipelineLibraryKey& key) {
+    auto bindings = key.getBindings();
+    auto layout = createPipelineLayout(bindings);
 
     auto iter = m_shaderLibraries.emplace(
       std::piecewise_construct,
       std::tuple(key),
-      std::tuple(m_device, this, shader.ptr(), layout));
+      std::tuple(m_device, this, key, layout));
     return &iter.first->second;
   }
 
 
   DxvkShaderPipelineLibrary* DxvkPipelineManager::createNullFsPipelineLibrary() {
     std::lock_guard<dxvk::mutex> lock(m_mutex);
-    auto layout = createPipelineLayout(DxvkBindingLayout(
-      VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT));
+    DxvkShaderPipelineLibraryKey key;
+
+    DxvkBindingLayout bindings(VK_SHADER_STAGE_FRAGMENT_BIT);
+    auto layout = createPipelineLayout(bindings);
 
     auto iter = m_shaderLibraries.emplace(
       std::piecewise_construct,
       std::tuple(),
-      std::tuple(m_device, this, nullptr, layout));
+      std::tuple(m_device, this, key, layout));
     return &iter.first->second;
   }
 
 
   DxvkShaderPipelineLibrary* DxvkPipelineManager::findPipelineLibrary(
-    const Rc<DxvkShader>&     shader) {
+    const DxvkShaderPipelineLibraryKey& key) {
     std::lock_guard<dxvk::mutex> lock(m_mutex);
-    return findPipelineLibraryLocked(shader);
+    return findPipelineLibraryLocked(key);
   }
 
 
   DxvkShaderPipelineLibrary* DxvkPipelineManager::findPipelineLibraryLocked(
-    const Rc<DxvkShader>&     shader) {
-    DxvkShaderPipelineLibraryKey key;
-    key.shader = shader;
-
+    const DxvkShaderPipelineLibraryKey& key) {
     auto pair = m_shaderLibraries.find(key);
     if (pair == m_shaderLibraries.end())
       return nullptr;
@@ -465,8 +494,8 @@ namespace dxvk {
 
 
   bool DxvkPipelineManager::canPrecompileShader(
-    const Rc<DxvkShader>&     shader) const {
-    if (!shader->canUsePipelineLibrary())
+    const Rc<DxvkShader>& shader) const {
+    if (!shader->canUsePipelineLibrary(true))
       return false;
 
     if (shader->info().stage == VK_SHADER_STAGE_COMPUTE_BIT)

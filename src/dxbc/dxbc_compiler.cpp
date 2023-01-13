@@ -258,6 +258,9 @@ namespace dxvk {
     info.uniformSize = m_immConstData.size();
     info.uniformData = m_immConstData.data();
 
+    if (m_programInfo.type() == DxbcProgramType::HullShader)
+      info.patchVertexCount = m_hs.vertexCountIn;
+
     if (m_programInfo.type() == DxbcProgramType::PixelShader && m_ps.pushConstantId)
       info.pushConstSize = sizeof(DxbcPushConstants);
 
@@ -713,6 +716,14 @@ namespace dxvk {
        || im == DxbcInterpolationMode::LinearNoPerspectiveSample) {
         m_module.enableCapability(spv::CapabilitySampleRateShading);
         m_module.decorate(varId, spv::DecorationSample);
+      }
+
+      if (m_moduleInfo.options.forceSampleRateShading) {
+        if (im == DxbcInterpolationMode::Linear
+         || im == DxbcInterpolationMode::LinearNoPerspective) {
+          m_module.enableCapability(spv::CapabilitySampleRateShading);
+          m_module.decorate(varId, spv::DecorationSample);
+        }
       }
 
       // Declare the input slot as defined

@@ -71,16 +71,6 @@ namespace dxvk {
             DxvkPipelinePriority            priority);
 
     /**
-     * \brief Compiles an optimized compute pipeline
-     *
-     * \param [in] pipeline Compute pipeline
-     * \param [in] state Pipeline state
-     */
-    void compileComputePipeline(
-            DxvkComputePipeline*            pipeline,
-      const DxvkComputePipelineStateInfo&   state);
-
-    /**
      * \brief Compiles an optimized graphics pipeline
      *
      * \param [in] pipeline Compute pipeline
@@ -107,9 +97,7 @@ namespace dxvk {
   private:
 
     struct PipelineEntry {
-      DxvkComputePipeline*          computePipeline;
       DxvkGraphicsPipeline*         graphicsPipeline;
-      DxvkComputePipelineStateInfo  computeState;
       DxvkGraphicsPipelineStateInfo graphicsState;
     };
 
@@ -184,6 +172,16 @@ namespace dxvk {
      */
     DxvkGraphicsPipeline* createGraphicsPipeline(
       const DxvkGraphicsPipelineShaders& shaders);
+
+    /**
+     * \brief Creates a pipeline library with a given set of shaders
+     *
+     * If a pipeline library already exists, it will be returned.
+     * Otherwise, a new pipeline library will be created.
+     * \param [in] key Shader set
+     */
+    DxvkShaderPipelineLibrary* createShaderPipelineLibrary(
+      const DxvkShaderPipelineLibraryKey& key);
 
     /**
      * \brief Retrieves a vertex input pipeline library
@@ -294,19 +292,19 @@ namespace dxvk {
     DxvkBindingLayoutObjects* createPipelineLayout(
       const DxvkBindingLayout& layout);
 
-    DxvkShaderPipelineLibrary* createPipelineLibrary(
-      const Rc<DxvkShader>&     shader);
+    DxvkShaderPipelineLibrary* createPipelineLibraryLocked(
+      const DxvkShaderPipelineLibraryKey& key);
 
     DxvkShaderPipelineLibrary* createNullFsPipelineLibrary();
 
     DxvkShaderPipelineLibrary* findPipelineLibrary(
-      const Rc<DxvkShader>&     shader);
+      const DxvkShaderPipelineLibraryKey& key);
 
     DxvkShaderPipelineLibrary* findPipelineLibraryLocked(
-      const Rc<DxvkShader>&     shader);
+      const DxvkShaderPipelineLibraryKey& key);
 
     bool canPrecompileShader(
-      const Rc<DxvkShader>&     shader) const;
+      const Rc<DxvkShader>& shader) const;
 
   };
   
