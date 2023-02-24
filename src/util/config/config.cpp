@@ -43,6 +43,14 @@ namespace dxvk {
       { "d3d11.dcSingleUseMode",            "False" },
       { "d3d11.cachedDynamicResources",     "vi"   },
     }} },
+    /* Far Cry 2: Set vendor ID to Nvidia to avoid
+     * vegetation artifacts on Intel, and set
+     * apitrace mode to True to improve perf on all
+     * hardware.                                  */
+    { R"(\\(FarCry2|farcry2game)\.exe$)", {{
+      { "d3d9.customVendorId",              "10de" },
+      { "d3d9.apitraceMode",                "True" },
+    }} },
     /* Far Cry 3: Assumes clear(0.5) on an UNORM  *
      * format to result in 128 on AMD and 127 on  *
      * Nvidia. We assume that the Vulkan drivers  *
@@ -720,6 +728,11 @@ namespace dxvk {
      * Temporary crash workaround              */
     { R"(\\BBCF\.exe$)", {{
       { "d3d9.textureMemory",               "0"   },
+    }} },
+    /* Battle Fantasia Revised Edition         *
+     * Speedup above 60fps                     */
+    { R"(\\bf10\.exe$)", {{
+      { "d3d9.maxFrameRate",                "60" },
     }} },
   }};
 
