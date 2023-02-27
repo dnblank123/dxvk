@@ -82,7 +82,7 @@ jobs:
       - name: Build Async
         run: |
             curl -O https://gitlab.com/Ph42oN/dxvk-gplasync/-/raw/main/dxvk-gplasync.patch
-            patch -p1 < dxvk-async.patch
+            patch -p1 < dxvk-gplasync.patch
             echo "dxvk.enableAsync = true" >> dxvk.conf
             ./package-release.sh "${{ steps.version_name.outputs.name }}-async" build --no-package
 
