@@ -64,3 +64,17 @@ jobs:
         name: dxvk-${{ env.VERSION_NAME }}
         path: build/dxvk-native-${{ env.VERSION_NAME }}
         if-no-files-found: error
+
+    - name: Build Async
+      run: |
+          curl -O https://gitlab.com/Ph42oN/dxvk-gplasync/-/raw/main/dxvk-gplasync.patch
+          patch -p1 < dxvk-async.patch
+          echo "dxvk.enableAsync = true" >> dxvk.conf
+          ./package-release.sh "${{ steps.version_name.outputs.name }}-async" build --no-package
+
+    - name: Upload Async Artifacts
+      uses: actions/upload-artifact@v2
+      with:
+          name: dxvk-${{ steps.version_name.outputs.name }}-async
+          path: build/dxvk-${{ steps.version_name.outputs.name }}-async
+          if-no-files-found: warn
