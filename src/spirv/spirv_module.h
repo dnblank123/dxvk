@@ -1,9 +1,9 @@
 #pragma once
 
 #include <unordered_set>
-
-#include "spirv_code_buffer.h"
 #include <optional>
+#include "spirv_code_buffer.h"
+
 namespace dxvk {
   
   struct SpirvPhiLabel {
