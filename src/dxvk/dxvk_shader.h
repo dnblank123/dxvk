@@ -19,24 +19,6 @@ namespace dxvk {
   struct DxvkPipelineStats;
   
   /**
-   * \brief Shader flags
-   *
-   * Provides extra information about the features
-   * used by a shader.
-   */
-  enum DxvkShaderFlag : uint64_t {
-    HasSampleRateShading,
-    HasTransformFeedback,
-    ExportsPosition,
-    ExportsStencilRef,
-    ExportsViewportIndexLayerFromVertexStage,
-    UsesFragmentCoverage,
-    UsesSparseResidency,
-  };
-
-  using DxvkShaderFlags = Flags<DxvkShaderFlag>;
-  
-  /**
    * \brief Shader info
    */
   struct DxvkShaderCreateInfo {
@@ -92,10 +74,20 @@ namespace dxvk {
   class DxvkShader : public RcObject {
     
   public:
+
+    struct BindingOffsets {
+      uint32_t bindingId;
+      uint32_t bindingOffset;
+      uint32_t setOffset;
+    };
     
     DxvkShader(
       const DxvkShaderCreateInfo&   info,
             SpirvCodeBuffer&&       spirv);
+
+    DxvkShader(
+      const DxvkShaderCreateInfo& info,
+      const SpirvModule&          spirv);
 
     ~DxvkShader();
     
@@ -244,12 +236,6 @@ namespace dxvk {
     
   private:
 
-    struct BindingOffsets {
-      uint32_t bindingId;
-      uint32_t bindingOffset;
-      uint32_t setOffset;
-    };
-
     DxvkShaderCreateInfo          m_info;
     SpirvCompressedBuffer         m_code;
     
@@ -257,14 +243,10 @@ namespace dxvk {
     DxvkShaderKey                 m_key;
     size_t                        m_hash = 0;
 
-    size_t                        m_o1IdxOffset = 0;
-    size_t                        m_o1LocOffset = 0;
-
     uint32_t                      m_specConstantMask = 0;
     std::atomic<bool>             m_needsLibraryCompile = { true };
 
     std::vector<char>             m_uniformData;
-    std::vector<BindingOffsets>   m_bindingOffsets;
 
     DxvkBindingLayout             m_bindings;
 
@@ -280,6 +262,10 @@ namespace dxvk {
     static void emitFlatShadingDeclarations(
             SpirvCodeBuffer&          code,
             uint32_t                  inputMask);
+
+    static void gatherBindingOffsets(
+            SpirvCodeBuffer&             code,
+            std::vector<BindingOffsets>& offsets);
 
   };
   
