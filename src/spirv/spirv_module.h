@@ -3,7 +3,7 @@
 #include <unordered_set>
 
 #include "spirv_code_buffer.h"
-
+#include <optional>
 namespace dxvk {
   
   struct SpirvPhiLabel {
