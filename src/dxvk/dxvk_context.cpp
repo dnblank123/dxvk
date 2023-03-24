@@ -101,9 +101,9 @@ namespace dxvk {
   }
 
 
-  void DxvkContext::flushCommandList() {
+  void DxvkContext::flushCommandList(DxvkSubmitStatus* status) {
     m_device->submitCommandList(
-      this->endRecording());
+      this->endRecording(), status);
     
     this->beginRecording(
       m_device->createCommandList());
@@ -1604,6 +1604,44 @@ namespace dxvk {
     // associated with the barrier to allow tracking.
     if (srcStages | dstStages)
       m_execBarriers.recordCommands(m_cmd);
+  }
+
+
+  void DxvkContext::emitBufferBarrier(
+    const Rc<DxvkBuffer>&           resource,
+          VkPipelineStageFlags      srcStages,
+          VkAccessFlags             srcAccess,
+          VkPipelineStageFlags      dstStages,
+          VkAccessFlags             dstAccess) {
+    this->spillRenderPass(true);
+
+    m_execBarriers.accessBuffer(resource->getSliceHandle(),
+      srcStages, srcAccess, dstStages, dstAccess);
+
+    m_cmd->trackResource<DxvkAccess::Write>(resource);
+  }
+
+
+  void DxvkContext::emitImageBarrier(
+    const Rc<DxvkImage>&            resource,
+          VkImageLayout             srcLayout,
+          VkPipelineStageFlags      srcStages,
+          VkAccessFlags             srcAccess,
+          VkImageLayout             dstLayout,
+          VkPipelineStageFlags      dstStages,
+          VkAccessFlags             dstAccess) {
+    this->spillRenderPass(true);
+    this->prepareImage(resource, resource->getAvailableSubresources());
+
+    if (m_execBarriers.isImageDirty(resource, resource->getAvailableSubresources(), DxvkAccess::Write))
+      m_execBarriers.recordCommands(m_cmd);
+
+    m_execBarriers.accessImage(
+      resource, resource->getAvailableSubresources(),
+      srcLayout, srcStages, srcAccess,
+      dstLayout, dstStages, dstAccess);
+
+    m_cmd->trackResource<DxvkAccess::Write>(resource);
   }
 
 
@@ -6153,6 +6191,10 @@ namespace dxvk {
 
     // Don't discard sparse buffers
     if (buffer->info().flags & VK_BUFFER_CREATE_SPARSE_BINDING_BIT)
+      return false;
+
+    // Don't discard imported buffers
+    if (buffer->isForeign())
       return false;
 
     // Suspend the current render pass if transform feedback is active prior to
