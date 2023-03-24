@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <optional>
 
 #include "dxvk_device_info.h"
@@ -11,7 +12,9 @@ namespace dxvk {
   
   class DxvkDevice;
   class DxvkInstance;
-  
+
+  using DxvkQueueCallback = std::function<void (bool)>;
+
   /**
    * \brief GPU vendors
    * Based on PCIe IDs.
@@ -55,6 +58,19 @@ namespace dxvk {
     uint32_t sparse;
   };
   
+  /**
+   * \brief Device import info
+   */
+  struct DxvkDeviceImportInfo {
+    VkDevice device;
+    VkQueue queue;
+    uint32_t queueFamily;
+    uint32_t extensionCount;
+    const char** extensionNames;
+    const VkPhysicalDeviceFeatures2* features;
+    DxvkQueueCallback queueCallback;
+  };
+
   /**
    * \brief DXVK adapter
    * 
@@ -197,6 +213,17 @@ namespace dxvk {
             DxvkDeviceFeatures  enabledFeatures);
     
     /**
+     * \brief Imports a foreign device
+     * 
+     * \param [in] instance Parent instance
+     * \param [in] args Device import info
+     * \returns Device handle
+     */
+    Rc<DxvkDevice> importDevice(
+      const Rc<DxvkInstance>&   instance,
+      const DxvkDeviceImportInfo& args);
+    
+    /**
      * \brief Registers heap memory allocation
      * 
      * Updates memory alloc info accordingly.
@@ -274,6 +301,14 @@ namespace dxvk {
             VkQueueFlags          mask,
             VkQueueFlags          flags) const;
     
+    std::vector<DxvkExt*> getExtensionList(
+            DxvkDeviceExtensions&   devExtensions);
+
+    static void initFeatureChain(
+            DxvkDeviceFeatures&   enabledFeatures,
+      const DxvkDeviceExtensions& devExtensions,
+      const DxvkInstanceExtensions& insExtensions);
+
     static void logNameList(const DxvkNameList& names);
     static void logFeatures(const DxvkDeviceFeatures& features);
     static void logQueueFamilies(const DxvkAdapterQueueIndices& queues);
