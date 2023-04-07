@@ -342,6 +342,19 @@ namespace dxvk {
     { R"(\\SF3ClientFinal\.exe$)", {{
       { "d3d11.cachedDynamicResources",        "v" },
     }} },
+    /* Tom Clancy's Ghost Recon Breakpoint        */
+    { R"(\\GRB\.exe$)", {{
+      { "dxgi.nvapiHack",                  "False" },
+    }} },
+    /* GTA V performance issues                   */
+    { R"(\\GTA5\.exe$)", {{
+      { "d3d11.cachedDynamicResources",     "vi"   },
+    }} },
+    /* Crash Bandicoot N. Sane Trilogy            *
+     * Work around some vsync funkiness           */
+    { R"(\\CrashBandicootNSaneTrilogy\.exe$)", {{
+      { "dxgi.syncInterval",                "1"   },
+    }} },
 
     /**********************************************/
     /* D3D9 GAMES                                 */
