@@ -462,7 +462,7 @@ namespace dxvk {
       { "d3d9.allowDiscard",                "False" },
     }} },
     /* ZUSI 3 - Aerosoft Edition                  */
-    { R"(\\ZusiSim\.exe$)", {{
+    { R"(\\ZusiSim(\.64)?\.exe$)", {{
       { "d3d9.noExplicitFrontBuffer",       "True" },
     }} },
     /* GTA IV (NVAPI)                             */
@@ -764,6 +764,11 @@ namespace dxvk {
      * Main menu won't render after intros     */
     { R"(\\(PANZERS|PANZERS_Phase_2)\.exe$)", {{
       { "d3d9.enableDialogMode",         "True"   },
+    }} },
+    /* Dark Romance: Vampire in Love          *
+     * Works around black screen or blinking  */
+    { R"(\\(DarkRomance_VampireInLove_CE)\.exe$)", {{
+      { "d3d9.allowDirectBufferMapping", "False"   },
     }} },
     
     /**********************************************/
