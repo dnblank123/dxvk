@@ -7459,7 +7459,7 @@ namespace dxvk {
       return;
 
     const uint32_t width32 = 32;
-    const uint32_t width64 = 64;
+    const uint32_t width64 = 32;
 
     if (flags.test(DxbcFloatControlFlag::DenormFlushToZero32)) {
       m_module.enableCapability(spv::CapabilityDenormFlushToZero);
