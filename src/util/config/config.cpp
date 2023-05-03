@@ -139,6 +139,11 @@ namespace dxvk {
     { R"(\\h1(_[ms]p64_ship|-mod)\.exe$)", {{
       { "dxgi.customVendorId",              "10de" },
     }} },
+    /* Modern Warfare 2 Campaign Remastered       *
+     * AMD AGS crash same as above                */
+    { R"(\\MW2CR.exe\.exe$)", {{
+      { "dxgi.customVendorId",              "10de" },
+    }} },
     /* Crysis 3 - slower if it notices AMD card     *
      * Apitrace mode helps massively in cpu bound   *
      * game parts                                   */
@@ -470,11 +475,13 @@ namespace dxvk {
      * and will report/use bad amounts of VRAM.
      * Disabling support for DF texture formats
      * makes the game use a better looking render
-     * path for mirrors                           */
+     * path for mirrors.
+     * Also runs into issues after alt-tabbing.   */
     { R"(\\(GTAIV|EFLC)\.exe$)", {{
       { "d3d9.customVendorId",              "1002" },
       { "dxgi.emulateUMA",                  "True" },
       { "d3d9.supportDFFormats",            "False" },
+      { "d3d9.deviceLost",                  "True" },
     }} },
     /* Battlefield 2 (bad z-pass)                 */
     { R"(\\BF2\.exe$)", {{
@@ -769,6 +776,11 @@ namespace dxvk {
      * Works around black screen or blinking  */
     { R"(\\(DarkRomance_VampireInLove_CE)\.exe$)", {{
       { "d3d9.allowDirectBufferMapping", "False"   },
+    }} },
+    /* DC Universe Online                      *
+     * Freezes after alt tabbing               */
+    { R"(\\DCGAME\.EXE$)", {{
+      { "d3d9.deviceLost",              "True"   },
     }} },
     
     /**********************************************/
