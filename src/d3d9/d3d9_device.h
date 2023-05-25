@@ -28,7 +28,9 @@
 
 #include "d3d9_spec_constants.h"
 #include "d3d9_interop.h"
+#include "d3d9_on_12.h"
 
+#include <cstdint>
 #include <unordered_set>
 #include <vector>
 #include <type_traits>
@@ -773,6 +775,9 @@ namespace dxvk {
 
     void UpdateActiveRTs(uint32_t index);
 
+    template <uint32_t Index>
+    void UpdateAnyColorWrites(bool has);
+
     void UpdateActiveTextures(uint32_t index, DWORD combinedUsage);
 
     void UpdateActiveHazardsRT(uint32_t rtMask);
@@ -1288,14 +1293,16 @@ namespace dxvk {
     uint32_t                        m_dirtySamplerStates = 0;
     uint32_t                        m_dirtyTextures      = 0;
 
-    uint32_t                        m_boundRTs = 0;
+    uint32_t                        m_boundRTs        : 4;
+    uint32_t                        m_anyColorWrites  : 4;
+    uint32_t                        m_activeRTs       : 4;
+    uint32_t                        m_activeHazardsRT : 4;
+    uint32_t                        m_alphaSwizzleRTs : 4;
+    uint32_t                        m_lastHazardsRT   : 4;
 
-    uint32_t                        m_activeRTs              = 0;
     uint32_t                        m_activeRTTextures       = 0;
     uint32_t                        m_activeDSTextures       = 0;
-    uint32_t                        m_activeHazardsRT        = 0;
     uint32_t                        m_activeHazardsDS        = 0;
-    uint32_t                        m_alphaSwizzleRTs        = 0;
     uint32_t                        m_activeTextures         = 0;
     uint32_t                        m_activeTexturesToUpload = 0;
     uint32_t                        m_activeTexturesToGen    = 0;
@@ -1310,7 +1317,6 @@ namespace dxvk {
     uint32_t                        m_fetch4        = 0;
 
     uint32_t                        m_lastHazardsDS = 0;
-    uint32_t                        m_lastHazardsRT = 0;
     uint32_t                        m_lastSamplerTypesFF = 0;
 
     D3D9SpecializationInfo          m_specInfo = D3D9SpecializationInfo();
@@ -1370,6 +1376,7 @@ namespace dxvk {
     Direct3DState9                  m_state;
 
     D3D9VkInteropDevice             m_d3d9Interop;
+    D3D9On12                        m_d3d9On12;
   };
 
 }

@@ -55,7 +55,8 @@ namespace dxvk {
     , m_isSWVP          ( (BehaviorFlags & D3DCREATE_SOFTWARE_VERTEXPROCESSING) ? true : false )
     , m_csThread        ( dxvkDevice, dxvkDevice->createContext(DxvkContextType::Primary) )
     , m_csChunk         ( AllocCsChunk() )
-    , m_d3d9Interop     ( this ) {
+    , m_d3d9Interop     ( this )
+    , m_d3d9On12        ( this ) {
     // If we can SWVP, then we use an extended constant set
     // as SWVP has many more slots available than HWVP.
     bool canSWVP = CanSWVP();
@@ -154,6 +155,14 @@ namespace dxvk {
     m_flags.set(D3D9DeviceFlag::DirtyPointScale);
 
     m_flags.set(D3D9DeviceFlag::DirtySpecializationEntries);
+
+    // Bitfields can't be initialized in header.
+    m_boundRTs = 0;
+    m_anyColorWrites = 0;
+    m_activeRTs = 0;
+    m_activeHazardsRT = 0;
+    m_alphaSwizzleRTs = 0;
+    m_lastHazardsRT = 0;
   }
 
 
@@ -194,6 +203,11 @@ namespace dxvk {
 
     if (riid == __uuidof(ID3D9VkInteropDevice)) {
       *ppvObject = ref(&m_d3d9Interop);
+      return S_OK;
+    }
+
+    if (riid == __uuidof(IDirect3DDevice9On12)) {
+      *ppvObject = ref(&m_d3d9On12);
       return S_OK;
     }
 
@@ -1972,31 +1986,23 @@ namespace dxvk {
           break;
 
         case D3DRS_COLORWRITEENABLE:
-          if (likely(!old != !Value)) {
-            m_flags.set(D3D9DeviceFlag::DirtyFramebuffer);
-            UpdateActiveRTs(0);
-          }
+          if (likely(!old != !Value))
+            UpdateAnyColorWrites<0>(!!Value);
           m_flags.set(D3D9DeviceFlag::DirtyBlendState);
           break;
         case D3DRS_COLORWRITEENABLE1:
-          if (likely(!old != !Value && m_state.renderTargets[1] != nullptr)) {
-            m_flags.set(D3D9DeviceFlag::DirtyFramebuffer);
-            UpdateActiveRTs(1);
-          }
+          if (likely(!old != !Value))
+            UpdateAnyColorWrites<1>(!!Value);
           m_flags.set(D3D9DeviceFlag::DirtyBlendState);
           break;
         case D3DRS_COLORWRITEENABLE2:
-          if (likely(!old != !Value && m_state.renderTargets[2] != nullptr)) {
-            m_flags.set(D3D9DeviceFlag::DirtyFramebuffer);
-            UpdateActiveRTs(2);
-          }
+          if (likely(!old != !Value))
+            UpdateAnyColorWrites<2>(!!Value);
           m_flags.set(D3D9DeviceFlag::DirtyBlendState);
           break;
         case D3DRS_COLORWRITEENABLE3:
-          if (likely(!old != !Value && m_state.renderTargets[3] != nullptr)) {
-            m_flags.set(D3D9DeviceFlag::DirtyFramebuffer);
-            UpdateActiveRTs(3);
-          }
+          if (likely(!old != !Value))
+            UpdateAnyColorWrites<3>(!!Value);
           m_flags.set(D3D9DeviceFlag::DirtyBlendState);
           break;
 
@@ -3278,21 +3284,33 @@ namespace dxvk {
 
     m_state.pixelShader = shader;
 
+    D3D9ShaderMasks newShaderMasks;
+
     if (shader != nullptr) {
       m_flags.set(D3D9DeviceFlag::DirtyFFPixelShader);
 
       BindShader<DxsoProgramTypes::PixelShader>(GetCommonShader(shader));
-      m_psShaderMasks = newShader->GetShaderMask();
+      newShaderMasks = newShader->GetShaderMask();
     }
     else {
       // TODO: What fixed function textures are in use?
       // Currently we are making all 8 of them as in use here.
 
       // The RT output is always 0 for fixed function.
-      m_psShaderMasks = FixedFunctionMask;
+      newShaderMasks = FixedFunctionMask;
     }
 
-    UpdateActiveHazardsRT(UINT32_MAX);
+    // If we have any RTs we would have bound to the the FB
+    // not in the new shader mask, mark the framebuffer as dirty
+    // so we unbind them.
+    if (m_boundRTs & m_anyColorWrites & m_psShaderMasks.rtMask & (~newShaderMasks.rtMask))
+      m_flags.set(D3D9DeviceFlag::DirtyFramebuffer);
+
+    if (m_psShaderMasks.samplerMask != newShaderMasks.samplerMask ||
+        m_psShaderMasks.rtMask != newShaderMasks.rtMask) {
+      m_psShaderMasks = newShaderMasks;
+      UpdateActiveHazardsRT(UINT32_MAX);
+    }
 
     return D3D_OK;
   }
@@ -5343,10 +5361,26 @@ namespace dxvk {
 
     if ((m_boundRTs & bit) != 0 &&
         m_state.renderTargets[index]->GetBaseTexture() != nullptr &&
-        m_state.renderStates[ColorWriteIndex(index)])
+        m_anyColorWrites & bit)
       m_activeRTs |= bit;
 
     UpdateActiveHazardsRT(bit);
+  }
+
+  template <uint32_t Index>
+  inline void D3D9DeviceEx::UpdateAnyColorWrites(bool has) {
+    const uint32_t bit = 1 << Index;
+
+    m_anyColorWrites &= ~bit;
+
+    if (has)
+      m_anyColorWrites |= bit;
+
+    // The 0th RT is always bound.
+    if (Index == 0 || m_boundRTs & bit) {
+      m_flags.set(D3D9DeviceFlag::DirtyFramebuffer);
+      UpdateActiveRTs(Index);
+    }
   }
 
 
@@ -5663,7 +5697,10 @@ namespace dxvk {
       else if (unlikely(sampleCount != rtImageInfo.sampleCount))
         continue;
 
-      if (!m_state.renderStates[ColorWriteIndex(i)])
+      if (!(m_anyColorWrites & (1 << i)))
+        continue;
+
+      if (!(m_psShaderMasks.rtMask & (1 << i)))
         continue;
 
       attachments.color[i] = {
@@ -7354,11 +7391,17 @@ namespace dxvk {
     UpdateVertexBoolSpec(0u);
     UpdatePixelBoolSpec(0u);
     UpdateCommonSamplerSpec(0u, 0u, 0u);
+
+    UpdateAnyColorWrites<0>(true);
+    UpdateAnyColorWrites<1>(true);
+    UpdateAnyColorWrites<2>(true);
+    UpdateAnyColorWrites<3>(true);
   }
 
 
   HRESULT D3D9DeviceEx::ResetSwapChain(D3DPRESENT_PARAMETERS* pPresentationParameters, D3DDISPLAYMODEEX* pFullscreenDisplayMode) {
     D3D9Format backBufferFmt = EnumerateFormat(pPresentationParameters->BackBufferFormat);
+    bool unlockedFormats = m_implicitSwapchain != nullptr && m_implicitSwapchain->HasFormatsUnlocked();
 
     Logger::info(str::format(
       "D3D9DeviceEx::ResetSwapChain:\n",
@@ -7371,7 +7414,7 @@ namespace dxvk {
       "    - Windowed:           ", pPresentationParameters->Windowed ? "true" : "false", "\n",
       "    - Swap effect:        ", pPresentationParameters->SwapEffect, "\n"));
 
-    if (backBufferFmt != D3D9Format::Unknown) {
+    if (backBufferFmt != D3D9Format::Unknown && !unlockedFormats) {
       if (!IsSupportedBackBufferFormat(backBufferFmt)) {
         Logger::err(str::format("D3D9DeviceEx::ResetSwapChain: Unsupported backbuffer format: ",
           EnumerateFormat(pPresentationParameters->BackBufferFormat)));

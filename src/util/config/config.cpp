@@ -360,6 +360,10 @@ namespace dxvk {
     { R"(\\CrashBandicootNSaneTrilogy\.exe$)", {{
       { "dxgi.syncInterval",                "1"   },
     }} },
+    /* SnowRunner                                 */
+    { R"(\\SnowRunner\.exe$)", {{
+      { "d3d11.dcSingleUseMode",        "False"   },
+    }} },
 
     /**********************************************/
     /* D3D9 GAMES                                 */
@@ -487,9 +491,13 @@ namespace dxvk {
     { R"(\\SpellForce2.*\.exe$)", {{
       { "d3d9.forceSamplerTypeSpecConstants", "True" },
     }} },
-    /* Tomb Raider: Legend                       */
-    { R"(\\trl\.exe$)", {{
+    /* Tomb Raider: Legend, Anniversary, Underworld  *
+     * Read from a buffer created with:              *
+     * D3DPOOL_DEFAULT,                              *
+     * D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY buffer  */
+    { R"(\\(trl|tra|tru)\.exe$)", {{
       { "d3d9.apitraceMode",                "True" },
+      { "d3d9.maxFrameRate",                "60" },
     }} },
     /* Everquest                                 */
     { R"(\\eqgame\.exe$)", {{
@@ -586,6 +594,7 @@ namespace dxvk {
     /* BlazBlue Centralfiction                  */
     { R"(\\BBCF\.exe$)", {{
       { "d3d9.floatEmulation",              "Strict" },
+      { "d3d9.textureMemory",               "0"   },
     }} },
     /* Resident Evil games using MT Framework   */
     { R"(\\(rerev|re0hd|bhd)\.exe$)", {{
@@ -730,11 +739,6 @@ namespace dxvk {
       { "d3d9.customDeviceId",              "05E0" },
       { "dxgi.nvapiHack",                   "False" },
     }} },
-    /* BlazBlue Centralfiction                 *
-     * Temporary crash workaround              */
-    { R"(\\BBCF\.exe$)", {{
-      { "d3d9.textureMemory",               "0"   },
-    }} },
     /* Battle Fantasia Revised Edition         *
      * Speedup above 60fps                     */
     { R"(\\bf10\.exe$)", {{
@@ -762,6 +766,11 @@ namespace dxvk {
      * Freezes after alt tabbing               */
     { R"(\\DCGAME\.EXE$)", {{
       { "d3d9.deviceLost",              "True"   },
+    }} },
+    /* Halo Online                             *
+     * Black textures                          */
+    { R"(\\eldorado\.exe$)", {{
+      { "d3d9.floatEmulation",        "Strict"   },
     }} },
     
     /**********************************************/
