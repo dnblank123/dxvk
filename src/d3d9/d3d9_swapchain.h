@@ -134,7 +134,7 @@ namespace dxvk {
     Rc<DxvkContext>           m_context;
     Rc<DxvkSwapchainBlitter>  m_blitter;
 
-    Rc<vk::Presenter>         m_presenter;
+    Rc<Presenter>             m_presenter;
 
     Rc<hud::Hud>              m_hud;
 
@@ -155,9 +155,7 @@ namespace dxvk {
     Rc<sync::Fence>           m_frameLatencySignal;
 
     bool                      m_dirty    = true;
-    bool                      m_vsync    = true;
-
-    bool                      m_dialog;
+    bool                      m_dialog   = false;
     bool                      m_lastDialog = false;
 
     HWND                      m_window   = nullptr;
@@ -179,12 +177,11 @@ namespace dxvk {
 
     void PresentImage(UINT PresentInterval);
 
-    void SubmitPresent(const vk::PresenterSync& Sync, uint32_t FrameId);
+    void SubmitPresent(const PresenterSync& Sync, uint32_t FrameId);
 
     void SynchronizePresent();
 
-    void RecreateSwapChain(
-        BOOL                      Vsync);
+    void RecreateSwapChain();
 
     void CreatePresenter();
 
@@ -208,10 +205,6 @@ namespace dxvk {
     uint32_t PickFormats(
             D3D9Format                Format,
             VkSurfaceFormatKHR*       pDstFormats);
-    
-    uint32_t PickPresentModes(
-            BOOL                      Vsync,
-            VkPresentModeKHR*         pDstModes);
     
     uint32_t PickImageCount(
             UINT                      Preferred);

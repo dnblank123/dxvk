@@ -72,7 +72,7 @@ namespace dxvk {
     CreateHud();
 
     if (!pDevice->GetOptions()->deferSurfaceCreation)
-      RecreateSwapChain(false);
+      RecreateSwapChain();
   }
 
 
@@ -260,17 +260,13 @@ namespace dxvk {
     if (options->syncInterval >= 0)
       SyncInterval = options->syncInterval;
 
-    if (!(PresentFlags & DXGI_PRESENT_TEST)) {
-      bool vsync = SyncInterval != 0;
-
-      m_dirty |= vsync != m_vsync;
-      m_vsync  = vsync;
-    }
+    if (!(PresentFlags & DXGI_PRESENT_TEST))
+      m_dirty |= m_presenter->setSyncInterval(SyncInterval) != VK_SUCCESS;
 
     HRESULT hr = S_OK;
 
     if (!m_presenter->hasSwapChain()) {
-      RecreateSwapChain(m_vsync);
+      RecreateSwapChain();
       m_dirty = false;
     }
 
@@ -284,7 +280,7 @@ namespace dxvk {
       return hr;
 
     if (std::exchange(m_dirty, false))
-      RecreateSwapChain(m_vsync);
+      RecreateSwapChain();
     
     try {
       PresentImage(SyncInterval);
@@ -350,15 +346,15 @@ namespace dxvk {
         return DXGI_STATUS_OCCLUDED;
 
       // Presentation semaphores and WSI swap chain image
-      vk::PresenterInfo info = m_presenter->info();
-      vk::PresenterSync sync;
+      PresenterInfo info = m_presenter->info();
+      PresenterSync sync;
 
       uint32_t imageIndex = 0;
 
       VkResult status = m_presenter->acquireNextImage(sync, imageIndex);
 
       while (status != VK_SUCCESS && status != VK_SUBOPTIMAL_KHR) {
-        RecreateSwapChain(m_vsync);
+        RecreateSwapChain();
 
         if (!m_presenter->hasSwapChain())
           return DXGI_STATUS_OCCLUDED;
@@ -397,7 +393,7 @@ namespace dxvk {
 
   void D3D11SwapChain::SubmitPresent(
           D3D11ImmediateContext*  pContext,
-    const vk::PresenterSync&      Sync,
+    const PresenterSync&          Sync,
           uint32_t                FrameId) {
     auto lock = pContext->LockContext();
 
@@ -409,6 +405,7 @@ namespace dxvk {
       cFrameId     = FrameId,
       cSync        = Sync,
       cHud         = m_hud,
+      cPresentMode = m_presenter->info().presentMode,
       cCommandList = m_context->endRecording()
     ] (DxvkContext* ctx) {
       cCommandList->setWsiSemaphores(cSync);
@@ -417,7 +414,7 @@ namespace dxvk {
       if (cHud != nullptr && !cFrameId)
         cHud->update();
 
-      m_device->presentImage(m_presenter, &m_presentStatus);
+      m_device->presentImage(m_presenter, cPresentMode, &m_presentStatus);
     });
 
     pContext->FlushCsChunk();
@@ -429,11 +426,11 @@ namespace dxvk {
     VkResult status = m_device->waitForSubmission(&m_presentStatus);
     
     if (status != VK_SUCCESS)
-      RecreateSwapChain(m_vsync);
+      RecreateSwapChain();
   }
 
 
-  void D3D11SwapChain::RecreateSwapChain(BOOL Vsync) {
+  void D3D11SwapChain::RecreateSwapChain() {
     // Ensure that we can safely destroy the swap chain
     m_device->waitForSubmission(&m_presentStatus);
     m_device->waitForIdle();
@@ -441,11 +438,10 @@ namespace dxvk {
     m_presentStatus.result = VK_SUCCESS;
     m_dirtyHdrMetadata = true;
 
-    vk::PresenterDesc presenterDesc;
+    PresenterDesc presenterDesc;
     presenterDesc.imageExtent     = { m_desc.Width, m_desc.Height };
     presenterDesc.imageCount      = PickImageCount(m_desc.BufferCount + 1);
     presenterDesc.numFormats      = PickFormats(m_desc.Format, presenterDesc.formats);
-    presenterDesc.numPresentModes = PickPresentModes(Vsync, presenterDesc.presentModes);
     presenterDesc.fullScreenExclusive = PickFullscreenMode();
 
     VkResult vr = m_presenter->recreateSwapChain(presenterDesc);
@@ -477,28 +473,13 @@ namespace dxvk {
 
 
   void D3D11SwapChain::CreatePresenter() {
-    DxvkDeviceQueue graphicsQueue = m_device->queues().graphics;
-
-    vk::PresenterDevice presenterDevice;
-    presenterDevice.queueFamily   = graphicsQueue.queueFamily;
-    presenterDevice.queue         = graphicsQueue.queueHandle;
-    presenterDevice.adapter       = m_device->adapter()->handle();
-    presenterDevice.features.fullScreenExclusive = m_device->features().extFullScreenExclusive;
-    presenterDevice.features.hdrMetadata = m_device->features().extHdrMetadata;
-
-    vk::PresenterDesc presenterDesc;
+    PresenterDesc presenterDesc;
     presenterDesc.imageExtent     = { m_desc.Width, m_desc.Height };
     presenterDesc.imageCount      = PickImageCount(m_desc.BufferCount + 1);
     presenterDesc.numFormats      = PickFormats(m_desc.Format, presenterDesc.formats);
-    presenterDesc.numPresentModes = PickPresentModes(false, presenterDesc.presentModes);
     presenterDesc.fullScreenExclusive = PickFullscreenMode();
 
-    m_presenter = new vk::Presenter(
-      m_device->adapter()->vki(),
-      m_device->vkd(),
-      presenterDevice,
-      presenterDesc);
-    
+    m_presenter = new Presenter(m_device, presenterDesc);
     m_presenter->setFrameRateLimit(m_parent->GetOptions()->maxFrameRate);
   }
 
@@ -513,7 +494,7 @@ namespace dxvk {
 
 
   void D3D11SwapChain::CreateRenderTargetViews() {
-    vk::PresenterInfo info = m_presenter->info();
+    PresenterInfo info = m_presenter->info();
 
     m_imageViews.clear();
     m_imageViews.resize(info.imageCount);
@@ -710,25 +691,6 @@ namespace dxvk {
       case DXGI_FORMAT_R16G16B16A16_FLOAT: {
         pDstFormats[n++] = { VK_FORMAT_R16G16B16A16_SFLOAT, m_colorspace };
       } break;
-    }
-
-    return n;
-  }
-
-
-  uint32_t D3D11SwapChain::PickPresentModes(
-          BOOL                      Vsync,
-          VkPresentModeKHR*         pDstModes) {
-    uint32_t n = 0;
-
-    if (Vsync) {
-      if (m_parent->GetOptions()->tearFree == Tristate::False)
-        pDstModes[n++] = VK_PRESENT_MODE_FIFO_RELAXED_KHR;
-      pDstModes[n++] = VK_PRESENT_MODE_FIFO_KHR;
-    } else {
-      if (m_parent->GetOptions()->tearFree != Tristate::True)
-        pDstModes[n++] = VK_PRESENT_MODE_IMMEDIATE_KHR;
-      pDstModes[n++] = VK_PRESENT_MODE_MAILBOX_KHR;
     }
 
     return n;

@@ -15,6 +15,7 @@
 #include "dxvk_objects.h"
 #include "dxvk_options.h"
 #include "dxvk_pipemanager.h"
+#include "dxvk_presenter.h"
 #include "dxvk_queue.h"
 #include "dxvk_recycler.h"
 #include "dxvk_renderpass.h"
@@ -24,8 +25,6 @@
 #include "dxvk_stats.h"
 #include "dxvk_unbound.h"
 #include "dxvk_marker.h"
-
-#include "../vulkan/vulkan_presenter.h"
 
 namespace dxvk {
   
@@ -455,10 +454,12 @@ namespace dxvk {
      * the submission thread. The status of this operation
      * can be retrieved with \ref waitForSubmission.
      * \param [in] presenter The presenter
+     * \param [in] presenteMode Present mode
      * \param [out] status Present status
      */
     void presentImage(
-      const Rc<vk::Presenter>&        presenter,
+      const Rc<Presenter>&            presenter,
+            VkPresentModeKHR          presentMode,
             DxvkSubmitStatus*         status);
     
     /**
@@ -564,7 +565,7 @@ namespace dxvk {
     
     DxvkRecycler<DxvkCommandList, 16> m_recycledCommandLists;
     
-    DxvkSubmissionQueue m_submissionQueue;
+    DxvkSubmissionQueue         m_submissionQueue;
 
     DxvkDevicePerfHints getPerfHints();
     

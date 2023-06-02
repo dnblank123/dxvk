@@ -97,7 +97,7 @@ namespace dxvk {
     Rc<DxvkDevice>            m_device;
     Rc<DxvkContext>           m_context;
 
-    Rc<vk::Presenter>         m_presenter;
+    Rc<Presenter>             m_presenter;
 
     Rc<DxvkImage>             m_swapImage;
     Rc<DxvkImageView>         m_swapImageView;
@@ -119,7 +119,6 @@ namespace dxvk {
     HANDLE                  m_processHandle = nullptr;
 
     bool                    m_dirty = true;
-    bool                    m_vsync = true;
 
     VkColorSpaceKHR         m_colorspace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 
@@ -130,13 +129,12 @@ namespace dxvk {
 
     void SubmitPresent(
             D3D11ImmediateContext*  pContext,
-      const vk::PresenterSync&      Sync,
+      const PresenterSync&          Sync,
             uint32_t                FrameId);
 
     void SynchronizePresent();
 
-    void RecreateSwapChain(
-            BOOL                      Vsync);
+    void RecreateSwapChain();
 
     void CreateFrameLatencyEvent();
 
@@ -161,10 +159,6 @@ namespace dxvk {
     uint32_t PickFormats(
             DXGI_FORMAT               Format,
             VkSurfaceFormatKHR*       pDstFormats);
-    
-    uint32_t PickPresentModes(
-            BOOL                      Vsync,
-            VkPresentModeKHR*         pDstModes);
     
     uint32_t PickImageCount(
             UINT                      Preferred);
