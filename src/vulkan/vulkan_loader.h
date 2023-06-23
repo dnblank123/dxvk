@@ -161,6 +161,10 @@ namespace dxvk::vk {
     #ifdef VK_EXT_full_screen_exclusive
     VULKAN_FN(vkGetPhysicalDeviceSurfacePresentModes2EXT);
     #endif
+
+    #ifdef VK_EXT_swapchain_maintenance1
+    VULKAN_FN(vkReleaseSwapchainImagesEXT);
+    #endif
   };
   
   
@@ -268,6 +272,7 @@ namespace dxvk::vk {
     VULKAN_FN(vkCmdSetScissor);
     VULKAN_FN(vkCmdSetLineWidth);
     VULKAN_FN(vkCmdSetDepthBias);
+    VULKAN_FN(vkCmdSetDepthBias2EXT);
     VULKAN_FN(vkCmdSetBlendConstants);
     VULKAN_FN(vkCmdSetDepthBounds);
     VULKAN_FN(vkCmdSetStencilCompareMask);
@@ -425,6 +430,10 @@ namespace dxvk::vk {
     #ifdef VK_KHR_external_semaphore_win32
     VULKAN_FN(vkGetSemaphoreWin32HandleKHR);
     VULKAN_FN(vkImportSemaphoreWin32HandleKHR);
+    #endif
+
+    #ifdef VK_KHR_PRESENT_WAIT_EXTENSION_NAME
+    VULKAN_FN(vkWaitForPresentKHR);
     #endif
   };
   

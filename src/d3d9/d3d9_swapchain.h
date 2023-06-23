@@ -18,10 +18,43 @@
 namespace dxvk {
 
   class D3D9Surface;
+  class D3D9SwapChainEx;
+
+  class D3D9VkExtSwapchain final : public ID3D9VkExtSwapchain {
+  public:
+    D3D9VkExtSwapchain(D3D9SwapChainEx *pSwapChain);
+    
+    ULONG STDMETHODCALLTYPE AddRef();
+    
+    ULONG STDMETHODCALLTYPE Release();
+    
+    HRESULT STDMETHODCALLTYPE QueryInterface(
+            REFIID                  riid,
+            void**                  ppvObject);
+
+    BOOL STDMETHODCALLTYPE CheckColorSpaceSupport(
+            VkColorSpaceKHR           ColorSpace);
+
+    HRESULT STDMETHODCALLTYPE SetColorSpace(
+            VkColorSpaceKHR           ColorSpace);
+
+    HRESULT STDMETHODCALLTYPE SetHDRMetaData(
+      const VkHdrMetadataEXT          *pHDRMetadata);
+
+    HRESULT STDMETHODCALLTYPE GetCurrentOutputDesc(
+            D3D9VkExtOutputMetadata   *pOutputDesc);
+
+    void STDMETHODCALLTYPE UnlockAdditionalFormats();
+
+  private:
+    D3D9SwapChainEx *m_swapchain;
+  };
 
   using D3D9SwapChainExBase = D3D9DeviceChild<IDirect3DSwapChain9Ex>;
   class D3D9SwapChainEx final : public D3D9SwapChainExBase {
     static constexpr uint32_t NumControlPoints = 256;
+
+    friend class D3D9VkExtSwapchain;
   public:
 
     D3D9SwapChainEx(
@@ -85,6 +118,10 @@ namespace dxvk {
 
     void SyncFrameLatency();
 
+    bool HasFormatsUnlocked() const { return m_unlockAdditionalFormats; }
+
+    void DestroyBackBuffers();
+
   private:
 
     enum BindingIds : uint32_t {
@@ -99,7 +136,7 @@ namespace dxvk {
     Rc<DxvkContext>           m_context;
     Rc<DxvkSwapchainBlitter>  m_blitter;
 
-    Rc<vk::Presenter>         m_presenter;
+    Rc<Presenter>             m_presenter;
 
     Rc<hud::Hud>              m_hud;
 
@@ -120,9 +157,7 @@ namespace dxvk {
     Rc<sync::Fence>           m_frameLatencySignal;
 
     bool                      m_dirty    = true;
-    bool                      m_vsync    = true;
-
-    bool                      m_dialog;
+    bool                      m_dialog   = false;
     bool                      m_lastDialog = false;
 
     HWND                      m_window   = nullptr;
@@ -134,22 +169,27 @@ namespace dxvk {
 
     bool                      m_warnedAboutGDIFallback = false;
 
+    VkColorSpaceKHR           m_colorspace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+
+    std::optional<VkHdrMetadataEXT> m_hdrMetadata;
+    bool m_dirtyHdrMetadata = true;
+    bool m_unlockAdditionalFormats = false;
+
+    D3D9VkExtSwapchain m_swapchainExt;
+
     void PresentImage(UINT PresentInterval);
 
-    void SubmitPresent(const vk::PresenterSync& Sync, uint32_t FrameId);
+    void SubmitPresent(const PresenterSync& Sync, uint32_t Repeat);
 
     void SynchronizePresent();
 
-    void RecreateSwapChain(
-        BOOL                      Vsync);
+    void RecreateSwapChain();
 
     void CreatePresenter();
 
     VkResult CreateSurface(VkSurfaceKHR* pSurface);
 
     void CreateRenderTargetViews();
-
-    void DestroyBackBuffers();
 
     HRESULT CreateBackBuffers(
             uint32_t            NumBackBuffers);
@@ -165,10 +205,6 @@ namespace dxvk {
     uint32_t PickFormats(
             D3D9Format                Format,
             VkSurfaceFormatKHR*       pDstFormats);
-    
-    uint32_t PickPresentModes(
-            BOOL                      Vsync,
-            VkPresentModeKHR*         pDstModes);
     
     uint32_t PickImageCount(
             UINT                      Preferred);

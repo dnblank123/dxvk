@@ -2442,6 +2442,15 @@ namespace dxvk {
   }
 
 
+  void DxvkContext::setDepthBiasRepresentation(
+          DxvkDepthBiasRepresentation  depthBiasRepresentation) {
+    if (m_state.dyn.depthBiasRepresentation != depthBiasRepresentation) {
+      m_state.dyn.depthBiasRepresentation = depthBiasRepresentation;
+      m_flags.set(DxvkContextFlag::GpDirtyDepthBias);
+    }
+  }
+
+
   void DxvkContext::setDepthBounds(
           DxvkDepthBounds     depthBounds) {
     if (m_state.dyn.depthBounds != depthBounds) {
@@ -4949,9 +4958,16 @@ namespace dxvk {
     if (unlikely(newPipeline->getSpecConstantMask() != m_state.gp.constants.mask))
       this->resetSpecConstants<VK_PIPELINE_BIND_POINT_GRAPHICS>(newPipeline->getSpecConstantMask());
 
-    if (m_state.gp.flags != newPipeline->flags()) {
-      m_state.gp.flags = newPipeline->flags();
+    DxvkGraphicsPipelineFlags oldFlags = m_state.gp.flags;
+    DxvkGraphicsPipelineFlags newFlags = newPipeline->flags();
 
+    DxvkGraphicsPipelineFlags hazardMask(
+      DxvkGraphicsPipelineFlag::HasTransformFeedback,
+      DxvkGraphicsPipelineFlag::HasStorageDescriptors);
+
+    m_state.gp.flags = newFlags;
+
+    if (((oldFlags ^ newFlags) & hazardMask) != 0) {
       // Force-update vertex/index buffers for hazard checks
       m_flags.set(DxvkContextFlag::GpDirtyIndexBuffer,
                   DxvkContextFlag::GpDirtyVertexBuffers,
@@ -5784,10 +5800,24 @@ namespace dxvk {
                     DxvkContextFlag::GpDynamicDepthBias)) {
       m_flags.clr(DxvkContextFlag::GpDirtyDepthBias);
 
-      m_cmd->cmdSetDepthBias(
-        m_state.dyn.depthBias.depthBiasConstant,
-        m_state.dyn.depthBias.depthBiasClamp,
-        m_state.dyn.depthBias.depthBiasSlope);
+      if (m_device->features().extDepthBiasControl.depthBiasControl) {
+        VkDepthBiasRepresentationInfoEXT depthBiasRepresentation = { VK_STRUCTURE_TYPE_DEPTH_BIAS_REPRESENTATION_INFO_EXT };
+        depthBiasRepresentation.depthBiasRepresentation = m_state.dyn.depthBiasRepresentation.depthBiasRepresentation;
+        depthBiasRepresentation.depthBiasExact          = m_state.dyn.depthBiasRepresentation.depthBiasExact;
+
+        VkDepthBiasInfoEXT depthBiasInfo = { VK_STRUCTURE_TYPE_DEPTH_BIAS_INFO_EXT };
+        depthBiasInfo.pNext                   = &depthBiasRepresentation;
+        depthBiasInfo.depthBiasConstantFactor = m_state.dyn.depthBias.depthBiasConstant;
+        depthBiasInfo.depthBiasClamp          = m_state.dyn.depthBias.depthBiasClamp;
+        depthBiasInfo.depthBiasSlopeFactor    = m_state.dyn.depthBias.depthBiasSlope;
+
+        m_cmd->cmdSetDepthBias2(&depthBiasInfo);
+      } else {
+        m_cmd->cmdSetDepthBias(
+          m_state.dyn.depthBias.depthBiasConstant,
+          m_state.dyn.depthBias.depthBiasClamp,
+          m_state.dyn.depthBias.depthBiasSlope);
+      }
     }
     
     if (m_flags.all(DxvkContextFlag::GpDirtyDepthBounds,

@@ -6,9 +6,8 @@
 
 #include "../util/thread.h"
 
-#include "../vulkan/vulkan_presenter.h"
-
 #include "dxvk_cmdlist.h"
+#include "dxvk_presenter.h"
 
 namespace dxvk {
   
@@ -43,7 +42,9 @@ namespace dxvk {
    * a swap chain image on the device.
    */
   struct DxvkPresentInfo {
-    Rc<vk::Presenter>   presenter;
+    Rc<Presenter>       presenter;
+    VkPresentModeKHR    presentMode;
+    uint64_t            frameId;
   };
 
 
@@ -51,6 +52,7 @@ namespace dxvk {
    * \brief Submission queue entry
    */
   struct DxvkSubmitEntry {
+    VkResult            result;
     DxvkSubmitStatus*   status;
     DxvkSubmitInfo      submit;
     DxvkPresentInfo     present;
@@ -159,6 +161,11 @@ namespace dxvk {
       std::unique_lock<dxvk::mutex> lock(m_mutex);
       m_finishCond.wait(lock, pred);
     }
+
+    /**
+     * \brief Waits for all submissions to complete
+     */
+    void waitForIdle();
 
     /**
      * \brief Locks device queue

@@ -29,7 +29,8 @@ namespace dxvk {
     , m_context          (m_device->createContext(DxvkContextType::Supplementary))
     , m_frameLatencyCap  (pDevice->GetOptions()->maxFrameLatency)
     , m_frameLatencySignal(new sync::Fence(m_frameId))
-    , m_dialog           (pDevice->GetOptions()->enableDialogMode) {
+    , m_dialog           (pDevice->GetOptions()->enableDialogMode)
+    , m_swapchainExt     (this) {
     this->NormalizePresentParameters(pPresentParams);
     m_presentParams = *pPresentParams;
     m_window = m_presentParams.hDeviceWindow;
@@ -40,7 +41,7 @@ namespace dxvk {
       CreatePresenter();
 
       if (!pDevice->GetOptions()->deferSurfaceCreation)
-        RecreateSwapChain(false);
+        RecreateSwapChain();
     }
 
     if (FAILED(CreateBackBuffers(m_presentParams.BackBufferCount)))
@@ -70,6 +71,8 @@ namespace dxvk {
 
     m_device->waitForSubmission(&m_presentStatus);
     m_device->waitForIdle();
+
+    m_parent->DecrementLosableCounter();
   }
 
 
@@ -83,6 +86,11 @@ namespace dxvk {
      || riid == __uuidof(IDirect3DSwapChain9)
      || (GetParent()->IsExtended() && riid == __uuidof(IDirect3DSwapChain9Ex))) {
       *ppvObject = ref(this);
+      return S_OK;
+    }
+
+    if (riid == __uuidof(ID3D9VkExtSwapchain)) {
+      *ppvObject = ref(&m_swapchainExt);
       return S_OK;
     }
 
@@ -129,8 +137,6 @@ namespace dxvk {
     if (options->presentInterval >= 0)
       presentInterval = options->presentInterval;
 
-    bool vsync  = presentInterval != 0;
-
     HWND window = m_presentParams.hDeviceWindow;
     if (hDestWindowOverride != nullptr)
       window    = hDestWindowOverride;
@@ -142,13 +148,13 @@ namespace dxvk {
 
     m_window    = window;
 
-    m_dirty    |= vsync != m_vsync;
+    if (m_presenter != nullptr) {
+      m_dirty  |= m_presenter->setSyncInterval(presentInterval) != VK_SUCCESS;
+      m_dirty  |= !m_presenter->hasSwapChain();
+    }
+
     m_dirty    |= UpdatePresentRegion(pSourceRect, pDestRect);
     m_dirty    |= recreate;
-    m_dirty    |= m_presenter != nullptr &&
-                 !m_presenter->hasSwapChain();
-
-    m_vsync     = vsync;
 
     m_lastDialog = m_dialog;
 
@@ -163,7 +169,7 @@ namespace dxvk {
         CreatePresenter();
 
       if (std::exchange(m_dirty, false))
-        RecreateSwapChain(vsync);
+        RecreateSwapChain();
 
       // We aren't going to device loss simply because
       // 99% of D3D9 games don't handle this properly and
@@ -430,6 +436,13 @@ namespace dxvk {
     if (unlikely(iBackBuffer >= m_presentParams.BackBufferCount)) {
       Logger::err(str::format("D3D9: GetBackBuffer: Invalid back buffer index: ", iBackBuffer));
       return D3DERR_INVALIDCALL;
+    }
+
+    if (m_backBuffers.empty()) {
+      // The backbuffers were destroyed and not recreated.
+      // This can happen when a call to Reset fails.
+      *ppBackBuffer = nullptr;
+      return D3D_OK;
     }
 
     *ppBackBuffer = ref(m_backBuffers[iBackBuffer].ptr());
@@ -741,25 +754,27 @@ namespace dxvk {
     Rc<DxvkImage> swapImage = m_backBuffers[0]->GetCommonTexture()->GetImage();
     Rc<DxvkImageView> swapImageView = m_backBuffers[0]->GetImageView(false);
 
-    // Bump our frame id.
-    ++m_frameId;
-
     for (uint32_t i = 0; i < SyncInterval || i < 1; i++) {
       SynchronizePresent();
 
       // Presentation semaphores and WSI swap chain image
-      vk::PresenterInfo info = m_presenter->info();
-      vk::PresenterSync sync;
+      PresenterInfo info = m_presenter->info();
+      PresenterSync sync;
 
       uint32_t imageIndex = 0;
 
       VkResult status = m_presenter->acquireNextImage(sync, imageIndex);
 
       while (status != VK_SUCCESS && status != VK_SUBOPTIMAL_KHR) {
-        RecreateSwapChain(m_vsync);
+        RecreateSwapChain();
         
         info = m_presenter->info();
         status = m_presenter->acquireNextImage(sync, imageIndex);
+      }
+
+      if (m_hdrMetadata && m_dirtyHdrMetadata) {
+        m_presenter->setHdrMetadata(*m_hdrMetadata);
+        m_dirtyHdrMetadata = false;
       }
 
       m_context->beginRecording(
@@ -780,9 +795,6 @@ namespace dxvk {
       if (m_hud != nullptr)
         m_hud->render(m_context, info.format, info.imageExtent);
 
-      if (i + 1 >= SyncInterval)
-        m_context->signal(m_frameLatencySignal, m_frameId);
-
       SubmitPresent(sync, i);
     }
 
@@ -797,24 +809,33 @@ namespace dxvk {
   }
 
 
-  void D3D9SwapChainEx::SubmitPresent(const vk::PresenterSync& Sync, uint32_t FrameId) {
+  void D3D9SwapChainEx::SubmitPresent(const PresenterSync& Sync, uint32_t Repeat) {
+    // Bump frame ID
+    if (!Repeat)
+      m_frameId += 1;
+
     // Present from CS thread so that we don't
     // have to synchronize with it first.
     m_presentStatus.result = VK_NOT_READY;
 
     m_parent->EmitCs([this,
-      cFrameId     = FrameId,
+      cRepeat      = Repeat,
       cSync        = Sync,
       cHud         = m_hud,
+      cPresentMode = m_presenter->info().presentMode,
+      cFrameId     = m_frameId,
       cCommandList = m_context->endRecording()
     ] (DxvkContext* ctx) {
       cCommandList->setWsiSemaphores(cSync);
       m_device->submitCommandList(cCommandList, nullptr);
 
-      if (cHud != nullptr && !cFrameId)
+      if (cHud != nullptr && !cRepeat)
         cHud->update();
 
-      m_device->presentImage(m_presenter, &m_presentStatus);
+      uint64_t frameId = cRepeat ? 0 : cFrameId;
+
+      m_device->presentImage(m_presenter,
+        cPresentMode, frameId, &m_presentStatus);
     });
 
     m_parent->FlushCsChunk();
@@ -826,21 +847,20 @@ namespace dxvk {
     VkResult status = m_device->waitForSubmission(&m_presentStatus);
 
     if (status != VK_SUCCESS)
-      RecreateSwapChain(m_vsync);
+      RecreateSwapChain();
   }
 
-  void D3D9SwapChainEx::RecreateSwapChain(BOOL Vsync) {
+  void D3D9SwapChainEx::RecreateSwapChain() {
     // Ensure that we can safely destroy the swap chain
     m_device->waitForSubmission(&m_presentStatus);
     m_device->waitForIdle();
 
     m_presentStatus.result = VK_SUCCESS;
 
-    vk::PresenterDesc presenterDesc;
+    PresenterDesc presenterDesc;
     presenterDesc.imageExtent     = GetPresentExtent();
     presenterDesc.imageCount      = PickImageCount(m_presentParams.BackBufferCount + 1);
     presenterDesc.numFormats      = PickFormats(EnumerateFormat(m_presentParams.BackBufferFormat), presenterDesc.formats);
-    presenterDesc.numPresentModes = PickPresentModes(Vsync, presenterDesc.presentModes);
     presenterDesc.fullScreenExclusive = PickFullscreenMode();
 
     VkResult vr = m_presenter->recreateSwapChain(presenterDesc);
@@ -870,26 +890,13 @@ namespace dxvk {
 
     m_presentStatus.result = VK_SUCCESS;
 
-    DxvkDeviceQueue graphicsQueue = m_device->queues().graphics;
-
-    vk::PresenterDevice presenterDevice;
-    presenterDevice.queueFamily   = graphicsQueue.queueFamily;
-    presenterDevice.queue         = graphicsQueue.queueHandle;
-    presenterDevice.adapter       = m_device->adapter()->handle();
-
-    vk::PresenterDesc presenterDesc;
+    PresenterDesc presenterDesc;
     presenterDesc.imageExtent     = GetPresentExtent();
     presenterDesc.imageCount      = PickImageCount(m_presentParams.BackBufferCount + 1);
     presenterDesc.numFormats      = PickFormats(EnumerateFormat(m_presentParams.BackBufferFormat), presenterDesc.formats);
-    presenterDesc.numPresentModes = PickPresentModes(false, presenterDesc.presentModes);
     presenterDesc.fullScreenExclusive = PickFullscreenMode();
 
-    m_presenter = new vk::Presenter(
-      m_device->adapter()->vki(),
-      m_device->vkd(),
-      presenterDevice,
-      presenterDesc);
-
+    m_presenter = new Presenter(m_device, m_frameLatencySignal, presenterDesc);
     m_presenter->setFrameRateLimit(m_parent->GetOptions()->maxFrameRate);
   }
 
@@ -905,7 +912,7 @@ namespace dxvk {
 
 
   void D3D9SwapChainEx::CreateRenderTargetViews() {
-    vk::PresenterInfo info = m_presenter->info();
+    PresenterInfo info = m_presenter->info();
 
     m_imageViews.clear();
     m_imageViews.resize(info.imageCount);
@@ -988,6 +995,7 @@ namespace dxvk {
       D3D9Surface* surface;
       try {
         surface = new D3D9Surface(m_parent, &desc, this, nullptr);
+        m_parent->IncrementLosableCounter();
       } catch (const DxvkError& e) {
         DestroyBackBuffers();
         Logger::err(e.message());
@@ -1086,46 +1094,36 @@ namespace dxvk {
       case D3D9Format::X8R8G8B8:
       case D3D9Format::A8B8G8R8:
       case D3D9Format::X8B8G8R8: {
-        pDstFormats[n++] = { VK_FORMAT_R8G8B8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR };
-        pDstFormats[n++] = { VK_FORMAT_B8G8R8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR };
+        pDstFormats[n++] = { VK_FORMAT_R8G8B8A8_UNORM, m_colorspace };
+        pDstFormats[n++] = { VK_FORMAT_B8G8R8A8_UNORM, m_colorspace };
       } break;
 
       case D3D9Format::A2R10G10B10:
       case D3D9Format::A2B10G10R10: {
-        pDstFormats[n++] = { VK_FORMAT_A2B10G10R10_UNORM_PACK32, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR };
-        pDstFormats[n++] = { VK_FORMAT_A2R10G10B10_UNORM_PACK32, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR };
+        pDstFormats[n++] = { VK_FORMAT_A2B10G10R10_UNORM_PACK32, m_colorspace };
+        pDstFormats[n++] = { VK_FORMAT_A2R10G10B10_UNORM_PACK32, m_colorspace };
       } break;
 
       case D3D9Format::X1R5G5B5:
       case D3D9Format::A1R5G5B5: {
-        pDstFormats[n++] = { VK_FORMAT_B5G5R5A1_UNORM_PACK16, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR };
-        pDstFormats[n++] = { VK_FORMAT_R5G5B5A1_UNORM_PACK16, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR };
-        pDstFormats[n++] = { VK_FORMAT_A1R5G5B5_UNORM_PACK16, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR };
+        pDstFormats[n++] = { VK_FORMAT_B5G5R5A1_UNORM_PACK16, m_colorspace };
+        pDstFormats[n++] = { VK_FORMAT_R5G5B5A1_UNORM_PACK16, m_colorspace };
+        pDstFormats[n++] = { VK_FORMAT_A1R5G5B5_UNORM_PACK16, m_colorspace };
       } break;
 
       case D3D9Format::R5G6B5: {
-        pDstFormats[n++] = { VK_FORMAT_B5G6R5_UNORM_PACK16, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR };
-        pDstFormats[n++] = { VK_FORMAT_R5G6B5_UNORM_PACK16, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR };
+        pDstFormats[n++] = { VK_FORMAT_B5G6R5_UNORM_PACK16, m_colorspace };
+        pDstFormats[n++] = { VK_FORMAT_R5G6B5_UNORM_PACK16, m_colorspace };
       } break;
-    }
 
-    return n;
-  }
-
-
-  uint32_t D3D9SwapChainEx::PickPresentModes(
-          BOOL                      Vsync,
-          VkPresentModeKHR*         pDstModes) {
-    uint32_t n = 0;
-
-    if (Vsync) {
-      if (m_parent->GetOptions()->tearFree == Tristate::False)
-        pDstModes[n++] = VK_PRESENT_MODE_FIFO_RELAXED_KHR;
-      pDstModes[n++] = VK_PRESENT_MODE_FIFO_KHR;
-    } else {
-      if (m_parent->GetOptions()->tearFree != Tristate::True)
-        pDstModes[n++] = VK_PRESENT_MODE_IMMEDIATE_KHR;
-      pDstModes[n++] = VK_PRESENT_MODE_MAILBOX_KHR;
+      case D3D9Format::A16B16G16R16F: {
+        if (m_unlockAdditionalFormats) {
+          pDstFormats[n++] = { VK_FORMAT_R16G16B16A16_SFLOAT, m_colorspace };
+        } else {
+          Logger::warn(str::format("D3D9SwapChainEx: Unexpected format: ", Format));      
+        }
+        break;
+      }
     }
 
     return n;
@@ -1301,6 +1299,93 @@ namespace dxvk {
 
   std::string D3D9SwapChainEx::GetApiName() {
     return this->GetParent()->IsExtended() ? "D3D9Ex" : "D3D9";
+  }
+
+  D3D9VkExtSwapchain::D3D9VkExtSwapchain(D3D9SwapChainEx *pSwapChain)
+    : m_swapchain(pSwapChain) {
+
+  }
+  
+  ULONG STDMETHODCALLTYPE D3D9VkExtSwapchain::AddRef() {
+    return m_swapchain->AddRef();
+  }
+  
+  ULONG STDMETHODCALLTYPE D3D9VkExtSwapchain::Release() {
+    return m_swapchain->Release();
+  }
+  
+  HRESULT STDMETHODCALLTYPE D3D9VkExtSwapchain::QueryInterface(
+          REFIID                  riid,
+          void**                  ppvObject) {
+    return m_swapchain->QueryInterface(riid, ppvObject);
+  }
+
+  BOOL STDMETHODCALLTYPE D3D9VkExtSwapchain::CheckColorSpaceSupport(
+          VkColorSpaceKHR           ColorSpace) {
+    return m_swapchain->m_presenter->supportsColorSpace(ColorSpace);
+  }
+
+  HRESULT STDMETHODCALLTYPE D3D9VkExtSwapchain::SetColorSpace(
+          VkColorSpaceKHR           ColorSpace) {
+    if (!CheckColorSpaceSupport(ColorSpace))
+      return D3DERR_INVALIDCALL;
+    
+    m_swapchain->m_dirty |= ColorSpace != m_swapchain->m_colorspace;
+    m_swapchain->m_colorspace = ColorSpace;
+
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE D3D9VkExtSwapchain::SetHDRMetaData(
+    const VkHdrMetadataEXT          *pHDRMetadata) {
+    if (!pHDRMetadata)
+      return D3DERR_INVALIDCALL;
+
+    m_swapchain->m_hdrMetadata      = *pHDRMetadata;
+    m_swapchain->m_dirtyHdrMetadata = true;
+
+    return S_OK;
+  }
+
+  HRESULT STDMETHODCALLTYPE D3D9VkExtSwapchain::GetCurrentOutputDesc(
+          D3D9VkExtOutputMetadata   *pOutputDesc) {
+    HMONITOR monitor = m_swapchain->m_monitor;
+    if (!monitor)
+      monitor = wsi::getDefaultMonitor();
+    // ^ this should be the display we are mostly covering someday.
+
+    wsi::WsiEdidData edidData = wsi::getMonitorEdid(monitor);
+    wsi::WsiDisplayMetadata metadata = {};
+    {
+      std::optional<wsi::WsiDisplayMetadata> r_metadata = std::nullopt;
+      if (!edidData.empty())
+        r_metadata = wsi::parseColorimetryInfo(edidData);
+
+      if (r_metadata)
+        metadata = *r_metadata;
+      else
+        Logger::err("D3D9: Failed to parse display metadata + colorimetry info, using blank.");
+    }
+
+
+    NormalizeDisplayMetadata(CheckColorSpaceSupport(VK_COLOR_SPACE_HDR10_ST2084_EXT), metadata);
+
+    pOutputDesc->RedPrimary[0]         = metadata.redPrimary[0];
+    pOutputDesc->RedPrimary[1]         = metadata.redPrimary[1];
+    pOutputDesc->GreenPrimary[0]       = metadata.greenPrimary[0];
+    pOutputDesc->GreenPrimary[1]       = metadata.greenPrimary[1];
+    pOutputDesc->BluePrimary[0]        = metadata.bluePrimary[0];
+    pOutputDesc->BluePrimary[1]        = metadata.bluePrimary[1];
+    pOutputDesc->WhitePoint[0]         = metadata.whitePoint[0];
+    pOutputDesc->WhitePoint[1]         = metadata.whitePoint[1];
+    pOutputDesc->MinLuminance          = metadata.minLuminance;
+    pOutputDesc->MaxLuminance          = metadata.maxLuminance;
+    pOutputDesc->MaxFullFrameLuminance = metadata.maxFullFrameLuminance;
+    return S_OK;
+  }
+
+  void STDMETHODCALLTYPE D3D9VkExtSwapchain::UnlockAdditionalFormats() {
+    m_swapchain->m_unlockAdditionalFormats = true;
   }
 
 }
