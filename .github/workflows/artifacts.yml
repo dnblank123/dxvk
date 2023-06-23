@@ -85,8 +85,8 @@ jobs:
         with:
           command: |
             export VERSION_NAME="${GITHUB_REF##*/}-${GITHUB_SHA##*/}"
-            curl -O https://gitlab.com/Ph42oN/dxvk-gplasync/-/raw/main/patches/dxvk-gplasync-2.2-4.patch
-            patch -p1 < dxvk-gplasync-2.2-4.patch
+            curl -O https://gist.githubusercontent.com/dnblank123/acfc1cdc495a49234c0cf5c897d98ad0/raw/7e616474a64bc9460603874b371415fae5d6d4c5/gistfile1.patch
+            patch -p1 < gistfile1.patch
             ./package-release.sh ${VERSION_NAME}-async build --no-package
             echo "VERSION_NAME=${VERSION_NAME}-async" >> $GITHUB_ENV
 
