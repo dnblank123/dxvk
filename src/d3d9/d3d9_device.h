@@ -879,6 +879,10 @@ namespace dxvk {
 
     void MarkTextureBindingDirty(IDirect3DBaseTexture9* texture);
 
+    HRESULT STDMETHODCALLTYPE SetRenderTargetInternal(
+            DWORD              RenderTargetIndex,
+            IDirect3DSurface9* pRenderTarget);
+
     D3D9DrawInfo GenerateDrawInfo(
       D3DPRIMITIVETYPE PrimitiveType,
       UINT             PrimitiveCount,
@@ -961,41 +965,24 @@ namespace dxvk {
     void TouchMappedTexture(D3D9CommonTexture* pTexture);
     void RemoveMappedTexture(D3D9CommonTexture* pTexture);
 
+    // Device Lost
     bool IsDeviceLost() const {
       return m_deviceLostState != D3D9DeviceLostState::Ok;
     }
 
-    void NotifyFullscreen(HWND window, bool fullscreen) {
-      D3D9DeviceLock lock = LockDevice();
+    void NotifyFullscreen(HWND window, bool fullscreen);
+    void NotifyWindowActivated(HWND window, bool activated);
 
-      if (fullscreen) {
-        if (unlikely(window != m_fullscreenWindow && m_fullscreenWindow != NULL)) {
-          Logger::warn("Multiple fullscreen windows detected.");
-        }
-        m_fullscreenWindow = window;
-      } else {
-        if (unlikely(m_fullscreenWindow != window)) {
-          Logger::warn("Window was not fullscreen in the first place.");
-        } else {
-          m_fullscreenWindow = 0;
-        }
-      }
+    void IncrementLosableCounter() {
+      m_losableResourceCounter++;
     }
 
-    void NotifyWindowActivated(HWND window, bool activated) {
-      D3D9DeviceLock lock = LockDevice();
-      
-      if (likely(!m_d3d9Options.deviceLost || IsExtended()))
-        return;
+    void DecrementLosableCounter() {
+      m_losableResourceCounter--;
+    }
 
-      if (activated && m_deviceLostState == D3D9DeviceLostState::Lost) {
-        Logger::info("Device not reset");
-        m_deviceLostState = D3D9DeviceLostState::NotReset;
-      } else if (!activated && m_deviceLostState != D3D9DeviceLostState::Lost && m_fullscreenWindow == window) {
-        Logger::info("Device lost");
-        m_deviceLostState = D3D9DeviceLostState::Lost;
-        m_fullscreenWindow = NULL;
-      }
+    bool CanOnlySWVP() const {
+      return m_behaviorFlags & D3DCREATE_SOFTWARE_VERTEXPROCESSING;
     }
 
   private:
@@ -1024,10 +1011,9 @@ namespace dxvk {
       }
     }
 
-    bool CanSWVP() {
+    bool CanSWVP() const {
       return m_behaviorFlags & (D3DCREATE_MIXED_VERTEXPROCESSING | D3DCREATE_SOFTWARE_VERTEXPROCESSING);
     }
-
     void DetermineConstantLayouts(bool canSWVP);
 
     D3D9BufferSlice AllocUPBuffer(VkDeviceSize size);
@@ -1214,7 +1200,6 @@ namespace dxvk {
     D3DDEVTYPE                      m_deviceType;
     HWND                            m_window;
     WORD                            m_behaviorFlags;
-    D3DPRESENT_PARAMETERS           m_presentParams;
 
     D3D9Adapter*                    m_adapter;
     Rc<DxvkDevice>                  m_dxvkDevice;
@@ -1296,12 +1281,12 @@ namespace dxvk {
     uint32_t                        m_boundRTs        : 4;
     uint32_t                        m_anyColorWrites  : 4;
     uint32_t                        m_activeRTs       : 4;
-    uint32_t                        m_activeHazardsRT : 4;
     uint32_t                        m_alphaSwizzleRTs : 4;
     uint32_t                        m_lastHazardsRT   : 4;
 
     uint32_t                        m_activeRTTextures       = 0;
     uint32_t                        m_activeDSTextures       = 0;
+    uint32_t                        m_activeHazardsRT        = 0;
     uint32_t                        m_activeHazardsDS        = 0;
     uint32_t                        m_activeTextures         = 0;
     uint32_t                        m_activeTexturesToUpload = 0;
@@ -1333,6 +1318,7 @@ namespace dxvk {
 
     bool                            m_usingGraphicsPipelines = false;
 
+    DxvkDepthBiasRepresentation     m_depthBiasRepresentation = { VK_DEPTH_BIAS_REPRESENTATION_LEAST_REPRESENTABLE_VALUE_FORMAT_EXT, false };
     float                           m_depthBiasScale  = 0.0f;
 
     uint32_t                        m_robustSSBOAlignment     = 1;
@@ -1366,6 +1352,7 @@ namespace dxvk {
 
     D3D9DeviceLostState             m_deviceLostState          = D3D9DeviceLostState::Ok;
     HWND                            m_fullscreenWindow         = NULL;
+    std::atomic<uint32_t>           m_losableResourceCounter   = { 0 };
 
 #ifdef D3D9_ALLOW_UNMAPPING
     lru_list<D3D9CommonTexture*>    m_mappedTextures;

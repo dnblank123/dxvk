@@ -49,7 +49,7 @@ namespace dxvk {
      * hardware.                                  */
     { R"(\\(FarCry2|farcry2game)\.exe$)", {{
       { "d3d9.customVendorId",              "10de" },
-      { "d3d9.apitraceMode",                "True" },
+      { "d3d9.cachedDynamicBuffers",        "True" },
     }} },
     /* Far Cry 3: Assumes clear(0.5) on an UNORM  *
      * format to result in 128 on AMD and 127 on  *
@@ -119,7 +119,7 @@ namespace dxvk {
     }} },
     /* Star Wars Battlefront (2015)               */
     { R"(\\starwarsbattlefront(trial)?\.exe$)", {{
-      { "dxgi.nvapiHack",                   "False" },
+      { "dxgi.customVendorId",              "10de" },
     }} },
     /* NieR Replicant                             */
     { R"(\\NieR Replicant ver\.1\.22474487139\.exe)", {{
@@ -364,6 +364,41 @@ namespace dxvk {
     { R"(\\SnowRunner\.exe$)", {{
       { "d3d11.dcSingleUseMode",        "False"   },
     }} },
+    /* Rockstar Games Launcher                    */
+    { R"(\\Rockstar Games\\Launcher\\Launcher\.exe$)", {{
+      { "dxvk.maxChunkSize",                "1"   },
+    }} },
+    /* Rockstar Social Club                       */
+    { R"(\\Rockstar Games\\Social Club\\SocialClubHelper\.exe$)", {{
+      { "dxvk.maxChunkSize",                "1"   },
+    }} },
+    /* EA Desktop App                             */
+    { R"(\\EADesktop\.exe$)", {{
+      { "dxvk.maxChunkSize",                "1"   },
+    }} },
+    /* GOG Galaxy                                 */
+    { R"(\\GalaxyClient\.exe$)", {{
+      { "dxvk.maxChunkSize",                "1"   },
+    }} },
+    /* Fallout 76
+     * Game tries to be too "smart" and changes sync
+     * interval based on performance (in fullscreen)
+     * or tries to match (or ratio below) 60fps
+     * (in windowed).
+     *
+     * Ends up getting in a loop where it will switch
+     * and start stuttering, or get stuck at targeting
+     * 30Hz in fullscreen.
+     * Windowed mode being locked to 60fps as well is
+     * pretty suboptimal...
+     */
+    { R"(\\Fallout76\.exe$)", {{
+      { "dxgi.syncInterval",              "1" },
+    }} },
+    /* Blizzard Entertainment Battle.net          */
+    { R"(\\Battle.net\.exe$)", {{
+      { "dxvk.maxChunkSize",                "1"   },
+    }} },
 
     /**********************************************/
     /* D3D9 GAMES                                 */
@@ -466,10 +501,6 @@ namespace dxvk {
     { R"(\\Neptunia\.exe$)", {{
       { "d3d9.forceAspectRatio",            "16:9" },
     }} },
-    /* D&D - The Temple Of Elemental Evil          */
-    { R"(\\ToEE(a)?\.exe$)", {{
-      { "d3d9.allowDiscard",                "False" },
-    }} },
     /* GTA IV (NVAPI)                             */
     /* Also thinks we're always on Intel          *
      * and will report/use bad amounts of VRAM.
@@ -481,7 +512,7 @@ namespace dxvk {
       { "d3d9.customVendorId",              "1002" },
       { "dxgi.emulateUMA",                  "True" },
       { "d3d9.supportDFFormats",            "False" },
-      { "d3d9.deviceLost",                  "True" },
+      { "d3d9.deviceLostOnFocusLoss",       "True" },
     }} },
     /* Battlefield 2 (bad z-pass)                 */
     { R"(\\BF2\.exe$)", {{
@@ -496,12 +527,12 @@ namespace dxvk {
      * D3DPOOL_DEFAULT,                              *
      * D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY buffer  */
     { R"(\\(trl|tra|tru)\.exe$)", {{
-      { "d3d9.apitraceMode",                "True" },
+      { "d3d9.cachedDynamicBuffers",        "True" },
       { "d3d9.maxFrameRate",                "60" },
     }} },
     /* Everquest                                 */
     { R"(\\eqgame\.exe$)", {{
-      { "d3d9.apitraceMode",                "True" },
+      { "d3d9.cachedDynamicBuffers",        "True" },
     }} },
     /* Dark Messiah of Might & Magic             */
     { R"(\\mm\.exe$)", {{
@@ -596,10 +627,6 @@ namespace dxvk {
       { "d3d9.floatEmulation",              "Strict" },
       { "d3d9.textureMemory",               "0"   },
     }} },
-    /* Resident Evil games using MT Framework   */
-    { R"(\\(rerev|re0hd|bhd)\.exe$)", {{
-      { "d3d9.allowDirectBufferMapping",                "False" },
-    }} },
     /* Limbo                                    */
     { R"(\\limbo\.exe$)", {{
       { "d3d9.maxFrameRate",                "60" },
@@ -659,7 +686,7 @@ namespace dxvk {
     }} },
     /* King Of Fighters XIII                     *
      * In-game speed increases on high FPS       */
-    { R"(\\kofxiii\.exe$)", {{
+    { R"(\\kof(xiii|13_win32_Release)\.exe$)", {{
       { "d3d9.maxFrameRate",                "60" },
     }} },
     /* YS Origin                                *
@@ -673,7 +700,7 @@ namespace dxvk {
     }} },
     /* Witcher 1: Very long loading times       */
     { R"(\\witcher\.exe$)", {{
-      { "d3d9.apitraceMode",              "True" },
+      { "d3d9.cachedDynamicBuffers",         "True" },
     }} },
     /* Guitar Hero World Tour                   *
      * Very prone to address space crashes      */
@@ -698,7 +725,7 @@ namespace dxvk {
     }} },
     /* Hammer World Editor                      */
     { R"(\\(hammer(plusplus)?|mallet|wc)\.exe$)", {{
-      { "d3d9.apitraceMode",                "True" },
+      { "d3d9.cachedDynamicBuffers",        "True" },
     }} },
     /* Dragon Age Origins                       *
      * Keeps unmapping the same 3 1MB buffers   *
@@ -715,7 +742,7 @@ namespace dxvk {
      * Helps performance when Resizable BAR    *
      * is enabled                              */
     { R"(\\ASN_App_PcDx9_Final\.exe$)", {{
-      { "d3d9.apitraceMode",                "True" },
+      { "d3d9.cachedDynamicBuffers",        "True" },
     }} },
     /* Black Mesa                              *
      * Artifacts & broken flashlight on Intel  */
@@ -744,33 +771,29 @@ namespace dxvk {
     { R"(\\bf10\.exe$)", {{
       { "d3d9.maxFrameRate",                "60" },
     }} },
-    /* WILD HEARTS™️                            *
-     * D3D12 title using D3D11 device for      *
-     * media texture creation, whereby a large *
-     * chunk size only slows down media        *
-     * initialization                          */
-    { R"(\\WILD HEARTS(_Trial)?\.exe$)", {{
-      { "dxvk.maxChunkSize",                 "4" },
-    }} },
     /* Codename Panzers Phase One/Two          *
      * Main menu won't render after intros     */
     { R"(\\(PANZERS|PANZERS_Phase_2)\.exe$)", {{
       { "d3d9.enableDialogMode",         "True"   },
     }} },
-    /* Dark Romance: Vampire in Love          *
-     * Works around black screen or blinking  */
-    { R"(\\(DarkRomance_VampireInLove_CE)\.exe$)", {{
-      { "d3d9.allowDirectBufferMapping", "False"   },
-    }} },
     /* DC Universe Online                      *
      * Freezes after alt tabbing               */
     { R"(\\DCGAME\.EXE$)", {{
-      { "d3d9.deviceLost",              "True"   },
+      { "d3d9.deviceLostOnFocusLoss",       "True" },
     }} },
     /* Halo Online                             *
      * Black textures                          */
     { R"(\\eldorado\.exe$)", {{
       { "d3d9.floatEmulation",        "Strict"   },
+    }} },
+    /* Injustice: Gods Among Us                *
+     * Locks a buffer that's still in use      */
+    { R"(\\injustice\.exe$)", {{
+      { "d3d9.allowDirectBufferMapping",    "False" },
+    }} },
+    /* STEINS;GATE ELITE                       */
+    { R"(\\SG_ELITE\\Game\.exe$)", {{
+      { "d3d9.maxFrameRate",                "60" },
     }} },
     
     /**********************************************/
@@ -781,6 +804,14 @@ namespace dxvk {
      * GPU unless dxgi Id match actual GPU Id  */
     { R"(\\Diablo IV\.exe$)", {{
       { "dxgi.nvapiHack",                "False"  },
+    }} },
+    /* WILD HEARTS™️                            *
+     * D3D12 title using D3D11 device for      *
+     * media texture creation, whereby a large *
+     * chunk size only slows down media        *
+     * initialization                          */
+    { R"(\\WILD HEARTS(_Trial)?\.exe$)", {{
+      { "dxvk.maxChunkSize",                 "4" },
     }} },
   }};
 

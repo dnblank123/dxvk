@@ -98,7 +98,8 @@ namespace dxvk {
     InitReturnPtr(ppvObject);
 
     if (riid == __uuidof(IUnknown)
-     || riid == __uuidof(IDXGIVkSwapChain)) {
+     || riid == __uuidof(IDXGIVkSwapChain)
+     || riid == __uuidof(IDXGIVkSwapChain1)) {
       *ppvObject = ref(this);
       return S_OK;
     }
@@ -276,19 +277,29 @@ namespace dxvk {
     if (m_device->getDeviceStatus() != VK_SUCCESS)
       hr = DXGI_ERROR_DEVICE_RESET;
 
-    if ((PresentFlags & DXGI_PRESENT_TEST) || hr != S_OK)
+    if (PresentFlags & DXGI_PRESENT_TEST)
       return hr;
+
+    if (hr != S_OK) {
+      SyncFrameLatency();
+      return hr;
+    }
 
     if (std::exchange(m_dirty, false))
       RecreateSwapChain();
-    
+
     try {
-      PresentImage(SyncInterval);
+      hr = PresentImage(SyncInterval);
     } catch (const DxvkError& e) {
       Logger::err(e.message());
       hr = E_FAIL;
     }
 
+    // Ensure to synchronize and release the frame latency semaphore
+    // even if presentation failed with STATUS_OCCLUDED, or otherwise
+    // applications using the semaphore may deadlock. This works because
+    // we do not increment the frame ID in those situations.
+    SyncFrameLatency();
     return hr;
   }
 
@@ -330,20 +341,30 @@ namespace dxvk {
   }
 
 
+  void STDMETHODCALLTYPE D3D11SwapChain::GetLastPresentCount(
+          UINT64*                   pLastPresentCount) {
+    *pLastPresentCount = UINT64(m_frameId - DXGI_MAX_SWAP_CHAIN_BUFFERS);
+  }
+
+
+  void STDMETHODCALLTYPE D3D11SwapChain::GetFrameStatistics(
+          DXGI_VK_FRAME_STATISTICS* pFrameStatistics) {
+    std::lock_guard<dxvk::mutex> lock(m_frameStatisticsLock);
+    *pFrameStatistics = m_frameStatistics;
+  }
+
+
   HRESULT D3D11SwapChain::PresentImage(UINT SyncInterval) {
     // Flush pending rendering commands before
     auto immediateContext = m_parent->GetContext();
     immediateContext->EndFrame();
     immediateContext->Flush();
 
-    // Bump our frame id.
-    ++m_frameId;
-    
     for (uint32_t i = 0; i < SyncInterval || i < 1; i++) {
       SynchronizePresent();
 
       if (!m_presenter->hasSwapChain())
-        return DXGI_STATUS_OCCLUDED;
+        return i ? S_OK : DXGI_STATUS_OCCLUDED;
 
       // Presentation semaphores and WSI swap chain image
       PresenterInfo info = m_presenter->info();
@@ -357,7 +378,7 @@ namespace dxvk {
         RecreateSwapChain();
 
         if (!m_presenter->hasSwapChain())
-          return DXGI_STATUS_OCCLUDED;
+          return i ? S_OK : DXGI_STATUS_OCCLUDED;
         
         info = m_presenter->info();
         status = m_presenter->acquireNextImage(sync, imageIndex);
@@ -368,8 +389,6 @@ namespace dxvk {
         m_dirtyHdrMetadata = false;
       }
 
-      // Resolve back buffer if it is multisampled. We
-      // only have to do it only for the first frame.
       m_context->beginRecording(
         m_device->createCommandList());
       
@@ -380,13 +399,9 @@ namespace dxvk {
       if (m_hud != nullptr)
         m_hud->render(m_context, info.format, info.imageExtent);
       
-      if (i + 1 >= SyncInterval)
-        m_context->signal(m_frameLatencySignal, m_frameId);
-
       SubmitPresent(immediateContext, sync, i);
     }
 
-    SyncFrameLatency();
     return S_OK;
   }
 
@@ -394,27 +409,35 @@ namespace dxvk {
   void D3D11SwapChain::SubmitPresent(
           D3D11ImmediateContext*  pContext,
     const PresenterSync&          Sync,
-          uint32_t                FrameId) {
+          uint32_t                Repeat) {
     auto lock = pContext->LockContext();
+
+    // Bump frame ID as necessary
+    if (!Repeat)
+      m_frameId += 1;
 
     // Present from CS thread so that we don't
     // have to synchronize with it first.
     m_presentStatus.result = VK_NOT_READY;
 
     pContext->EmitCs([this,
-      cFrameId     = FrameId,
+      cRepeat      = Repeat,
       cSync        = Sync,
       cHud         = m_hud,
       cPresentMode = m_presenter->info().presentMode,
+      cFrameId     = m_frameId,
       cCommandList = m_context->endRecording()
     ] (DxvkContext* ctx) {
       cCommandList->setWsiSemaphores(cSync);
       m_device->submitCommandList(cCommandList, nullptr);
 
-      if (cHud != nullptr && !cFrameId)
+      if (cHud != nullptr && !cRepeat)
         cHud->update();
 
-      m_device->presentImage(m_presenter, cPresentMode, &m_presentStatus);
+      uint64_t frameId = cRepeat ? 0 : cFrameId;
+
+      m_device->presentImage(m_presenter,
+        cPresentMode, frameId, &m_presentStatus);
     });
 
     pContext->FlushCsChunk();
@@ -479,7 +502,7 @@ namespace dxvk {
     presenterDesc.numFormats      = PickFormats(m_desc.Format, presenterDesc.formats);
     presenterDesc.fullScreenExclusive = PickFullscreenMode();
 
-    m_presenter = new Presenter(m_device, presenterDesc);
+    m_presenter = new Presenter(m_device, m_frameLatencySignal, presenterDesc);
     m_presenter->setFrameRateLimit(m_parent->GetOptions()->maxFrameRate);
   }
 
@@ -636,11 +659,17 @@ namespace dxvk {
     // Wait for the sync event so that we respect the maximum frame latency
     m_frameLatencySignal->wait(m_frameId - GetActualFrameLatency());
 
-    if (m_frameLatencyEvent) {
-      m_frameLatencySignal->setCallback(m_frameId, [cFrameLatencyEvent = m_frameLatencyEvent] () {
+    m_frameLatencySignal->setCallback(m_frameId, [this,
+      cFrameId           = m_frameId,
+      cFrameLatencyEvent = m_frameLatencyEvent
+    ] () {
+      if (cFrameLatencyEvent)
         ReleaseSemaphore(cFrameLatencyEvent, 1, nullptr);
-      });
-    }
+
+      std::lock_guard<dxvk::mutex> lock(m_frameStatisticsLock);
+      m_frameStatistics.PresentCount = cFrameId - DXGI_MAX_SWAP_CHAIN_BUFFERS;
+      m_frameStatistics.PresentQPCTime = dxvk::high_resolution_clock::get_counter();
+    });
   }
 
 
@@ -656,7 +685,7 @@ namespace dxvk {
     if (m_frameLatencyCap)
       maxFrameLatency = std::min(maxFrameLatency, m_frameLatencyCap);
 
-    maxFrameLatency = std::min(maxFrameLatency, m_desc.BufferCount + 1);
+    maxFrameLatency = std::min(maxFrameLatency, m_desc.BufferCount);
     return maxFrameLatency;
   }
 

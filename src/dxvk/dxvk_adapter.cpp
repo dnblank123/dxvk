@@ -244,6 +244,10 @@ namespace dxvk {
         && CHECK_FEATURE_NEED(extCustomBorderColor.customBorderColors)
         && CHECK_FEATURE_NEED(extCustomBorderColor.customBorderColorWithoutFormat)
         && CHECK_FEATURE_NEED(extDepthClipEnable.depthClipEnable)
+        && CHECK_FEATURE_NEED(extDepthBiasControl.depthBiasControl)
+        && CHECK_FEATURE_NEED(extDepthBiasControl.leastRepresentableValueForceUnormRepresentation)
+        && CHECK_FEATURE_NEED(extDepthBiasControl.floatRepresentation)
+        && CHECK_FEATURE_NEED(extDepthBiasControl.depthBiasExact)
         && CHECK_FEATURE_NEED(extGraphicsPipelineLibrary.graphicsPipelineLibrary)
         && CHECK_FEATURE_NEED(extMemoryBudget)
         && CHECK_FEATURE_NEED(extMemoryPriority.memoryPriority)
@@ -382,6 +386,19 @@ namespace dxvk {
       m_deviceFeatures.extSwapchainMaintenance1.swapchainMaintenance1 &&
       instance->extensions().extSurfaceMaintenance1;
 
+    // Enable present id and present wait together, if possible
+    enabledFeatures.khrPresentId.presentId =
+      m_deviceFeatures.khrPresentId.presentId;
+    enabledFeatures.khrPresentWait.presentWait =
+      m_deviceFeatures.khrPresentId.presentId &&
+      m_deviceFeatures.khrPresentWait.presentWait;
+
+    // Unless we're on an Nvidia driver where these extensions are known to be broken
+    if (matchesDriver(VK_DRIVER_ID_NVIDIA_PROPRIETARY, 0, VK_MAKE_VERSION(535, 0, 0))) {
+      enabledFeatures.khrPresentId.presentId = VK_FALSE;
+      enabledFeatures.khrPresentWait.presentWait = VK_FALSE;
+    }
+
     // Create pNext chain for additional device features
     initFeatureChain(enabledFeatures, devExtensions, instance->extensions());
 
@@ -513,6 +530,10 @@ namespace dxvk {
           enabledFeatures.extDepthClipEnable = *reinterpret_cast<const VkPhysicalDeviceDepthClipEnableFeaturesEXT*>(f);
           break;
 
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_BIAS_CONTROL_FEATURES_EXT:
+          enabledFeatures.extDepthBiasControl = *reinterpret_cast<const VkPhysicalDeviceDepthBiasControlFeaturesEXT*>(f);
+          break;
+
         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT:
           enabledFeatures.extExtendedDynamicState3 = *reinterpret_cast<const VkPhysicalDeviceExtendedDynamicState3FeaturesEXT*>(f);
           break;
@@ -551,6 +572,14 @@ namespace dxvk {
 
         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT:
           enabledFeatures.extVertexAttributeDivisor = *reinterpret_cast<const VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT*>(f);
+          break;
+
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR:
+          enabledFeatures.khrPresentId = *reinterpret_cast<const VkPhysicalDevicePresentIdFeaturesKHR*>(f);
+          break;
+
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR:
+          enabledFeatures.khrPresentWait = *reinterpret_cast<const VkPhysicalDevicePresentWaitFeaturesKHR*>(f);
           break;
 
         default:
@@ -768,6 +797,11 @@ namespace dxvk {
       m_deviceFeatures.extDepthClipEnable.pNext = std::exchange(m_deviceFeatures.core.pNext, &m_deviceFeatures.extDepthClipEnable);
     }
 
+    if (m_deviceExtensions.supports(VK_EXT_DEPTH_BIAS_CONTROL_EXTENSION_NAME)) {
+      m_deviceFeatures.extDepthBiasControl.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_BIAS_CONTROL_FEATURES_EXT;
+      m_deviceFeatures.extDepthBiasControl.pNext = std::exchange(m_deviceFeatures.core.pNext, &m_deviceFeatures.extDepthBiasControl);
+    }
+
     if (m_deviceExtensions.supports(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME)) {
       m_deviceFeatures.extExtendedDynamicState3.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT;
       m_deviceFeatures.extExtendedDynamicState3.pNext = std::exchange(m_deviceFeatures.core.pNext, &m_deviceFeatures.extExtendedDynamicState3);
@@ -839,6 +873,16 @@ namespace dxvk {
     if (m_deviceExtensions.supports(VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME))
       m_deviceFeatures.khrExternalSemaphoreWin32 = VK_TRUE;
 
+    if (m_deviceExtensions.supports(VK_KHR_PRESENT_ID_EXTENSION_NAME)) {
+      m_deviceFeatures.khrPresentId.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR;
+      m_deviceFeatures.khrPresentId.pNext = std::exchange(m_deviceFeatures.core.pNext, &m_deviceFeatures.khrPresentId);
+    }
+
+    if (m_deviceExtensions.supports(VK_KHR_PRESENT_WAIT_EXTENSION_NAME)) {
+      m_deviceFeatures.khrPresentWait.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR;
+      m_deviceFeatures.khrPresentWait.pNext = std::exchange(m_deviceFeatures.core.pNext, &m_deviceFeatures.khrPresentWait);
+    }
+
     if (m_deviceExtensions.supports(VK_NVX_BINARY_IMPORT_EXTENSION_NAME))
       m_deviceFeatures.nvxBinaryImport = VK_TRUE;
 
@@ -881,6 +925,7 @@ namespace dxvk {
       &devExtensions.extConservativeRasterization,
       &devExtensions.extCustomBorderColor,
       &devExtensions.extDepthClipEnable,
+      &devExtensions.extDepthBiasControl,
       &devExtensions.extExtendedDynamicState3,
       &devExtensions.extFragmentShaderInterlock,
       &devExtensions.extFullScreenExclusive,
@@ -899,6 +944,8 @@ namespace dxvk {
       &devExtensions.khrExternalMemoryWin32,
       &devExtensions.khrExternalSemaphoreWin32,
       &devExtensions.khrPipelineLibrary,
+      &devExtensions.khrPresentId,
+      &devExtensions.khrPresentWait,
       &devExtensions.khrSwapchain,
       &devExtensions.nvxBinaryImport,
       &devExtensions.nvxImageViewHandle,
@@ -941,6 +988,11 @@ namespace dxvk {
     if (devExtensions.extDepthClipEnable) {
       enabledFeatures.extDepthClipEnable.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_CLIP_ENABLE_FEATURES_EXT;
       enabledFeatures.extDepthClipEnable.pNext = std::exchange(enabledFeatures.core.pNext, &enabledFeatures.extDepthClipEnable);
+    }
+
+    if (devExtensions.extDepthBiasControl) {
+      enabledFeatures.extDepthBiasControl.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_BIAS_CONTROL_FEATURES_EXT;
+      enabledFeatures.extDepthBiasControl.pNext = std::exchange(enabledFeatures.core.pNext, &enabledFeatures.extDepthBiasControl);
     }
 
     if (devExtensions.extExtendedDynamicState3) {
@@ -1016,6 +1068,16 @@ namespace dxvk {
 
     if (devExtensions.nvxBinaryImport)
       enabledFeatures.nvxBinaryImport = VK_TRUE;
+
+    if (devExtensions.khrPresentId) {
+      enabledFeatures.khrPresentId.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR;
+      enabledFeatures.khrPresentId.pNext = std::exchange(enabledFeatures.core.pNext, &enabledFeatures.khrPresentId);
+    }
+
+    if (devExtensions.khrPresentWait) {
+      enabledFeatures.khrPresentWait.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR;
+      enabledFeatures.khrPresentWait.pNext = std::exchange(enabledFeatures.core.pNext, &enabledFeatures.khrPresentWait);
+    }
 
     if (devExtensions.nvxImageViewHandle)
       enabledFeatures.nvxImageViewHandle = VK_TRUE;
@@ -1099,6 +1161,11 @@ namespace dxvk {
       "\n  customBorderColorWithoutFormat         : ", features.extCustomBorderColor.customBorderColorWithoutFormat ? "1" : "0",
       "\n", VK_EXT_DEPTH_CLIP_ENABLE_EXTENSION_NAME,
       "\n  depthClipEnable                        : ", features.extDepthClipEnable.depthClipEnable ? "1" : "0",
+      "\n", VK_EXT_DEPTH_BIAS_CONTROL_EXTENSION_NAME,
+      "\n  depthBiasControl                       : ", features.extDepthBiasControl.depthBiasControl ? "1" : "0",
+      "\n  leastRepresentableValueForceUnormRepresentation : ", features.extDepthBiasControl.leastRepresentableValueForceUnormRepresentation ? "1" : "0",
+      "\n  floatRepresentation                    : ", features.extDepthBiasControl.floatRepresentation ? "1" : "0",
+      "\n  depthBiasExact                         : ", features.extDepthBiasControl.depthBiasExact ? "1" : "0",
       "\n", VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME,
       "\n  extDynamicState3AlphaToCoverageEnable  : ", features.extExtendedDynamicState3.extendedDynamicState3AlphaToCoverageEnable ? "1" : "0",
       "\n  extDynamicState3DepthClipEnable        : ", features.extExtendedDynamicState3.extendedDynamicState3DepthClipEnable ? "1" : "0",
@@ -1141,6 +1208,10 @@ namespace dxvk {
       "\n  extension supported                    : ", features.khrExternalMemoryWin32 ? "1" : "0",
       "\n", VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME,
       "\n  extension supported                    : ", features.khrExternalSemaphoreWin32 ? "1" : "0",
+      "\n", VK_KHR_PRESENT_ID_EXTENSION_NAME,
+      "\n  presentId                              : ", features.khrPresentId.presentId ? "1" : "0",
+      "\n", VK_KHR_PRESENT_WAIT_EXTENSION_NAME,
+      "\n  presentWait                            : ", features.khrPresentWait.presentWait ? "1" : "0",
       "\n", VK_NVX_BINARY_IMPORT_EXTENSION_NAME,
       "\n  extension supported                    : ", features.nvxBinaryImport ? "1" : "0",
       "\n", VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME,

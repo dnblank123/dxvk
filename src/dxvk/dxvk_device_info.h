@@ -44,6 +44,7 @@ namespace dxvk {
     VkBool32                                                  extConservativeRasterization;
     VkPhysicalDeviceCustomBorderColorFeaturesEXT              extCustomBorderColor;
     VkPhysicalDeviceDepthClipEnableFeaturesEXT                extDepthClipEnable;
+    VkPhysicalDeviceDepthBiasControlFeaturesEXT               extDepthBiasControl;
     VkPhysicalDeviceExtendedDynamicState3FeaturesEXT          extExtendedDynamicState3;
     VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT        extFragmentShaderInterlock;
     VkBool32                                                  extFullScreenExclusive;
@@ -61,6 +62,8 @@ namespace dxvk {
     VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT         extVertexAttributeDivisor;
     VkBool32                                                  khrExternalMemoryWin32;
     VkBool32                                                  khrExternalSemaphoreWin32;
+    VkPhysicalDevicePresentIdFeaturesKHR                      khrPresentId;
+    VkPhysicalDevicePresentWaitFeaturesKHR                    khrPresentWait;
     VkBool32                                                  nvxBinaryImport;
     VkBool32                                                  nvxImageViewHandle;
   };
