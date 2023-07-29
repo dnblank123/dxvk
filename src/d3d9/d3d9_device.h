@@ -32,10 +32,13 @@
 
 #include <cstdint>
 #include <unordered_set>
+#include "d3d9_bridge.h"
+
 #include <vector>
 #include <type_traits>
 #include <unordered_map>
 
+#include "../util/util_flush.h"
 #include "../util/util_lru.h"
 
 namespace dxvk {
@@ -125,8 +128,10 @@ namespace dxvk {
     constexpr static VkDeviceSize StagingBufferSize = 4ull << 20;
 
     friend class D3D9SwapChainEx;
+    friend struct D3D9WindowContext;
     friend class D3D9ConstantBuffer;
     friend class D3D9UserDefinedAnnotation;
+    friend class DxvkD3D8Bridge;
     friend D3D9VkInteropDevice;
   public:
 
@@ -924,7 +929,7 @@ namespace dxvk {
     void SetVertexBoolBitfield(uint32_t idx, uint32_t mask, uint32_t bits);
     void SetPixelBoolBitfield (uint32_t idx, uint32_t mask, uint32_t bits);
 
-    void FlushImplicit(BOOL StrongHint);
+    void ConsiderFlush(GpuFlushType FlushType);
 
     bool ChangeReportedMemory(int64_t delta) {
       if (IsExtended())
@@ -992,12 +997,15 @@ namespace dxvk {
       return DxvkCsChunkRef(chunk, &m_csChunkPool);
     }
 
-    template<typename Cmd>
+    template<bool AllowFlush = true, typename Cmd>
     void EmitCs(Cmd&& command) {
       if (unlikely(!m_csChunk->push(command))) {
         EmitCsChunk(std::move(m_csChunk));
-
         m_csChunk = AllocCsChunk();
+
+        if constexpr (AllowFlush)
+          ConsiderFlush(GpuFlushType::ImplicitWeakHint);
+
         m_csChunk->push(command);
       }
     }
@@ -1280,12 +1288,12 @@ namespace dxvk {
 
     uint32_t                        m_boundRTs        : 4;
     uint32_t                        m_anyColorWrites  : 4;
-    uint32_t                        m_activeRTs       : 4;
+    uint32_t                        m_activeRTsWhichAreTextures : 4;
     uint32_t                        m_alphaSwizzleRTs : 4;
     uint32_t                        m_lastHazardsRT   : 4;
 
-    uint32_t                        m_activeRTTextures       = 0;
-    uint32_t                        m_activeDSTextures       = 0;
+    uint32_t                        m_activeTextureRTs       = 0;
+    uint32_t                        m_activeTextureDSs       = 0;
     uint32_t                        m_activeHazardsRT        = 0;
     uint32_t                        m_activeHazardsDS        = 0;
     uint32_t                        m_activeTextures         = 0;
@@ -1340,12 +1348,14 @@ namespace dxvk {
     D3D9ViewportInfo                m_viewportInfo;
 
     DxvkCsChunkPool                 m_csChunkPool;
-    dxvk::high_resolution_clock::time_point m_lastFlush
-      = dxvk::high_resolution_clock::now();
     DxvkCsThread                    m_csThread;
     DxvkCsChunkRef                  m_csChunk;
     uint64_t                        m_csSeqNum = 0ull;
-    bool                            m_csIsBusy = false;
+
+    Rc<sync::Fence>                 m_submissionFence;
+    uint64_t                        m_submissionId = 0ull;
+    uint64_t                        m_flushSeqNum = 0ull;
+    GpuFlushTracker                 m_flushTracker;
 
     std::atomic<int64_t>            m_availableMemory = { 0 };
     std::atomic<int32_t>            m_samplerCount    = { 0 };
@@ -1364,6 +1374,7 @@ namespace dxvk {
 
     D3D9VkInteropDevice             m_d3d9Interop;
     D3D9On12                        m_d3d9On12;
+    DxvkD3D8Bridge                  m_d3d8Bridge;
   };
 
 }

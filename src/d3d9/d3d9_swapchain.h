@@ -50,6 +50,14 @@ namespace dxvk {
     D3D9SwapChainEx *m_swapchain;
   };
 
+  struct D3D9WindowContext {
+    Rc<Presenter>                  presenter;
+    std::vector<Rc<DxvkImageView>> imageViews;
+
+    uint64_t                       frameId = D3D9DeviceEx::MaxFrameLatency;
+    Rc<sync::Fence>                frameLatencySignal;
+  };
+
   using D3D9SwapChainExBase = D3D9DeviceChild<IDirect3DSwapChain9Ex>;
   class D3D9SwapChainEx final : public D3D9SwapChainExBase {
     static constexpr uint32_t NumControlPoints = 256;
@@ -122,6 +130,10 @@ namespace dxvk {
 
     void DestroyBackBuffers();
 
+    void SetApiName(const char* name);
+
+    void UpdateWindowCtx();
+
   private:
 
     enum BindingIds : uint32_t {
@@ -136,7 +148,11 @@ namespace dxvk {
     Rc<DxvkContext>           m_context;
     Rc<DxvkSwapchainBlitter>  m_blitter;
 
-    Rc<Presenter>             m_presenter;
+    std::unordered_map<
+      HWND,
+      D3D9WindowContext>      m_presenters;
+
+    D3D9WindowContext*        m_wctx = nullptr;
 
     Rc<hud::Hud>              m_hud;
 
@@ -149,12 +165,7 @@ namespace dxvk {
 
     DxvkSubmitStatus          m_presentStatus;
 
-    std::vector<Rc<DxvkImageView>> m_imageViews;
-
-
-    uint64_t                  m_frameId           = D3D9DeviceEx::MaxFrameLatency;
-    uint32_t                  m_frameLatencyCap   = 0;
-    Rc<sync::Fence>           m_frameLatencySignal;
+    uint32_t                  m_frameLatencyCap = 0;
 
     bool                      m_dirty    = true;
     bool                      m_dialog   = false;
@@ -166,6 +177,8 @@ namespace dxvk {
     wsi::DxvkWindowState      m_windowState;
 
     double                    m_displayRefreshRate = 0.0;
+
+    const char*               m_apiName  = nullptr;
 
     bool                      m_warnedAboutGDIFallback = false;
 

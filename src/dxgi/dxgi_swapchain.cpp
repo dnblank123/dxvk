@@ -202,7 +202,7 @@ namespace dxvk {
     pStats->PresentCount          = frameStatistics.PresentCount;
     pStats->PresentRefreshCount   = 0;
     pStats->SyncRefreshCount      = 0;
-    pStats->SyncQPCTime.QuadPart  = t1Counter;
+    pStats->SyncQPCTime.QuadPart  = frameStatistics.PresentQPCTime;
     pStats->SyncGPUTime.QuadPart  = 0;
 
     if (SUCCEEDED(AcquireMonitorData(m_monitor, &monitorData))) {
@@ -838,7 +838,7 @@ namespace dxvk {
 
     HRESULT hr = m_monitorInfo->AcquireMonitorData(hMonitor, ppData);
 
-    if (FAILED(hr)) {
+    if (FAILED(hr) && HasLiveReferences()) {
       // We may need to initialize a DXGI output to populate monitor data.
       // If acquiring monitor data has failed previously, do not try again.
       if (hMonitor == m_monitor && !m_monitorHasOutput)
