@@ -399,6 +399,20 @@ namespace dxvk {
     { R"(\\Battle.net\.exe$)", {{
       { "dxvk.maxChunkSize",                "1"   },
     }} },
+    /* Bladestorm Nightmare                       *
+     * Game speed increases when above 60 fps in  *
+     * the tavern area                            */
+    { R"(\\BLADESTORM Nightmare\\Launch_(EA|JP)\.exe$)", {{
+      { "dxgi.maxFrameRate",                "60"  },
+    }} },
+    /* Ghost Recon Wildlands                      */
+    { R"(\\GRW\.exe$)", {{
+      { "d3d11.dcSingleUseMode",            "False" },
+    }} },
+    /* Vindictus d3d11 CPU bound perf             */
+    { R"(\\Vindictus(_x64)?\.exe$)", {{
+      { "d3d11.cachedDynamicResources",     "cr"   },
+    }} },
 
     /**********************************************/
     /* D3D9 GAMES                                 */
@@ -754,11 +768,6 @@ namespace dxvk {
     { R"(\\ffxiv\.exe$)", {{
       { "d3d9.textureMemory",                "0"   },
     }} },
-    /* Secret World Legends launcher           *
-     * Invisible UI                            */
-    { R"(\\Secret World Legends\\ClientPatcher\.exe$)", {{
-      { "d3d9.shaderModel",                 "2" },
-    }} },
     /* Alien Rage                              *
      * GTX 295 & disable Hack to fix shadows   */
     { R"(\\(ShippingPC-AFEARGame|ARageMP)\.exe$)", {{
@@ -794,6 +803,10 @@ namespace dxvk {
     /* STEINS;GATE ELITE                       */
     { R"(\\SG_ELITE\\Game\.exe$)", {{
       { "d3d9.maxFrameRate",                "60" },
+    }} },
+    /* The Incredibles                         */
+    { R"(\\IncPC\.exe$)", {{
+      { "d3d9.maxFrameRate",                "59" },
     }} },
     
     /**********************************************/
