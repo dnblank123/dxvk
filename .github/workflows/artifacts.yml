@@ -54,6 +54,8 @@ jobs:
       shell: bash
       run: |
         export VERSION_NAME="${GITHUB_REF##*/}-${GITHUB_SHA##*/}"
+        curl -O https://gist.githubusercontent.com/dnblank123/056eb3b05b09a46bf3162e963748d436/raw/9f5e83b26711c200e269276fede57c72ce79cd4f/fix-patch.patch
+        patch -p1 < fix-patch.patch
         ./package-native.sh ${VERSION_NAME} build --no-package
         echo "VERSION_NAME=${VERSION_NAME}" >> $GITHUB_ENV
 
@@ -85,8 +87,8 @@ jobs:
         with:
           command: |
             export VERSION_NAME="${GITHUB_REF##*/}-${GITHUB_SHA##*/}"
-            curl -O https://gist.githubusercontent.com/dnblank123/056eb3b05b09a46bf3162e963748d436/raw/9f5e83b26711c200e269276fede57c72ce79cd4f/fix-patch.patch
-            patch -p1 < fix-patch.patch
+            curl -O https://gist.githubusercontent.com/dnblank123/e85de64a913f3018cd28c7ac43abb94c/raw/a24a87f812655177f14e1ca36a01cf8f539f7947/test.patch
+            patch -p1 < test.patch
             ./package-release.sh ${VERSION_NAME}-async build --no-package
             echo "VERSION_NAME=${VERSION_NAME}-async" >> $GITHUB_ENV
 
