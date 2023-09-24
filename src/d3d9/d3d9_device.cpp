@@ -2308,6 +2308,9 @@ namespace dxvk {
         case D3DRS_ADAPTIVETESS_W:
           if (states[D3DRS_ADAPTIVETESS_X] == uint32_t(D3D9Format::NVDB) || oldNVDB) {
             m_flags.set(D3D9DeviceFlag::DirtyDepthBounds);
+
+            if (m_state.depthStencil != nullptr && m_state.renderStates[D3DRS_ZENABLE])
+              m_flags.set(D3D9DeviceFlag::DirtyFramebuffer);
             break;
           }
         [[fallthrough]];
@@ -2357,7 +2360,8 @@ namespace dxvk {
     try {
       const Com<D3D9StateBlock> sb = new D3D9StateBlock(this, ConvertStateBlockType(Type));
       *ppSB = sb.ref();
-      m_losableResourceCounter++;
+      if (!m_isD3D8Compatible)
+        m_losableResourceCounter++;
 
       return D3D_OK;
     }
@@ -2389,7 +2393,8 @@ namespace dxvk {
       return D3DERR_INVALIDCALL;
 
     *ppSB = m_recorder.ref();
-    m_losableResourceCounter++;
+    if (!m_isD3D8Compatible)
+      m_losableResourceCounter++;
     m_recorder = nullptr;
 
     return D3D_OK;
@@ -4536,9 +4541,12 @@ namespace dxvk {
       if (pResource->GetImage() != nullptr) {
         Rc<DxvkImage> resourceImage = pResource->GetImage();
 
-        Rc<DxvkImage> mappedImage = resourceImage->info().sampleCount != 1
-          ? pResource->GetResolveImage()
-          : std::move(resourceImage);
+        Rc<DxvkImage> mappedImage;
+        if (resourceImage->info().sampleCount != 1) {
+            mappedImage = pResource->GetResolveImage();
+        } else {
+            mappedImage = std::move(resourceImage);
+        }
 
         // When using any map mode which requires the image contents
         // to be preserved, and if the GPU has write access to the
@@ -5589,8 +5597,7 @@ namespace dxvk {
 
     m_activeHazardsDS = m_activeHazardsDS & (~texMask);
     if (m_state.depthStencil != nullptr &&
-        m_state.depthStencil->GetBaseTexture() != nullptr &&
-        m_state.renderStates[D3DRS_ZWRITEENABLE]) {
+        m_state.depthStencil->GetBaseTexture() != nullptr) {
       for (uint32_t samplerIdx : bit::BitMask(masks.samplerMask)) {
         IDirect3DBaseTexture9* dsBase  = m_state.depthStencil->GetBaseTexture();
         IDirect3DBaseTexture9* texBase = m_state.textures[samplerIdx];
@@ -5637,16 +5644,17 @@ namespace dxvk {
     for (uint32_t samplerIdx : bit::BitMask(m_activeHazardsRT)) {
       // Guaranteed to not be nullptr...
       auto tex = GetCommonTexture(m_state.textures[samplerIdx]);
-      if (unlikely(!tex->MarkHazardous())) {
+      if (unlikely(!tex->MarkTransitionedToHazardLayout())) {
         TransitionImage(tex, m_hazardLayout);
         m_flags.set(D3D9DeviceFlag::DirtyFramebuffer);
       }
     }
 
-    if (m_activeHazardsDS != 0) {
+    bool zWriteEnabled = m_state.renderStates[D3DRS_ZWRITEENABLE];
+    if (m_activeHazardsDS != 0 && zWriteEnabled) {
       // Guaranteed to not be nullptr...
       auto tex = m_state.depthStencil->GetCommonTexture();
-      if (unlikely(!tex->MarkHazardous())) {
+      if (unlikely(!tex->MarkTransitionedToHazardLayout())) {
         TransitionImage(tex, m_hazardLayout);
         m_flags.set(D3D9DeviceFlag::DirtyFramebuffer);
       }
@@ -5882,7 +5890,8 @@ namespace dxvk {
     if (m_state.depthStencil != nullptr &&
       (m_state.renderStates[D3DRS_ZENABLE]
         || m_state.renderStates[D3DRS_ZWRITEENABLE]
-        || m_state.renderStates[D3DRS_STENCILENABLE])) {
+        || m_state.renderStates[D3DRS_STENCILENABLE]
+        || m_state.renderStates[D3DRS_ADAPTIVETESS_X] == uint32_t(D3D9Format::NVDB))) {
       const DxvkImageCreateInfo& dsImageInfo = m_state.depthStencil->GetCommonTexture()->GetImage()->info();
       const bool depthWrite = m_state.renderStates[D3DRS_ZWRITEENABLE];
 
@@ -5897,7 +5906,7 @@ namespace dxvk {
     if (m_hazardLayout == VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT) {
       if (m_activeHazardsRT != 0)
         feedbackLoopAspects |= VK_IMAGE_ASPECT_COLOR_BIT;
-      if (m_activeHazardsDS != 0)
+      if (m_activeHazardsDS != 0 && attachments.depth.layout != VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL)
         feedbackLoopAspects |= VK_IMAGE_ASPECT_DEPTH_BIT;
     }
 

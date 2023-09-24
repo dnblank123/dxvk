@@ -25,6 +25,7 @@ namespace dxvk {
     VkPhysicalDeviceRobustness2PropertiesEXT                  extRobustness2;
     VkPhysicalDeviceTransformFeedbackPropertiesEXT            extTransformFeedback;
     VkPhysicalDeviceVertexAttributeDivisorPropertiesEXT       extVertexAttributeDivisor;
+    VkPhysicalDeviceMaintenance5PropertiesKHR                 khrMaintenance5;
   };
 
 
@@ -64,10 +65,12 @@ namespace dxvk {
     VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT         extVertexAttributeDivisor;
     VkBool32                                                  khrExternalMemoryWin32;
     VkBool32                                                  khrExternalSemaphoreWin32;
+    VkPhysicalDeviceMaintenance5FeaturesKHR                   khrMaintenance5;
     VkPhysicalDevicePresentIdFeaturesKHR                      khrPresentId;
     VkPhysicalDevicePresentWaitFeaturesKHR                    khrPresentWait;
     VkBool32                                                  nvxBinaryImport;
     VkBool32                                                  nvxImageViewHandle;
+    VkBool32                                                  khrWin32KeyedMutex;
   };
 
 }

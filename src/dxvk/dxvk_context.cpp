@@ -61,6 +61,10 @@ namespace dxvk {
     // requested rasterizer sample count changes
     if (m_device->features().core.features.variableMultisampleRate)
       m_features.set(DxvkContextFeature::VariableMultisampleRate);
+
+    // Maintenance5 introduced a bounded BindIndexBuffer function
+    if (m_device->features().khrMaintenance5.maintenance5)
+      m_features.set(DxvkContextFeature::IndexBufferRobustness);
   }
   
   
@@ -4832,13 +4836,14 @@ namespace dxvk {
       VkDeviceSize ctrOffsets[MaxNumXfbBuffers];
 
       for (uint32_t i = 0; i < MaxNumXfbBuffers; i++) {
-        auto physSlice = m_state.xfb.counters[i].getSliceHandle();
+        m_state.xfb.activeCounters[i] = m_state.xfb.counters[i];
+        auto physSlice = m_state.xfb.activeCounters[i].getSliceHandle();
 
         ctrBuffers[i] = physSlice.handle;
         ctrOffsets[i] = physSlice.offset;
 
         if (physSlice.handle != VK_NULL_HANDLE)
-          m_cmd->trackResource<DxvkAccess::Read>(m_state.xfb.counters[i].buffer());
+          m_cmd->trackResource<DxvkAccess::Read>(m_state.xfb.activeCounters[i].buffer());
       }
       
       m_cmd->cmdBeginTransformFeedback(
@@ -4858,13 +4863,15 @@ namespace dxvk {
       VkDeviceSize ctrOffsets[MaxNumXfbBuffers];
 
       for (uint32_t i = 0; i < MaxNumXfbBuffers; i++) {
-        auto physSlice = m_state.xfb.counters[i].getSliceHandle();
+        auto physSlice = m_state.xfb.activeCounters[i].getSliceHandle();
 
         ctrBuffers[i] = physSlice.handle;
         ctrOffsets[i] = physSlice.offset;
 
         if (physSlice.handle != VK_NULL_HANDLE)
-          m_cmd->trackResource<DxvkAccess::Write>(m_state.xfb.counters[i].buffer());
+          m_cmd->trackResource<DxvkAccess::Write>(m_state.xfb.activeCounters[i].buffer());
+
+        m_state.xfb.activeCounters[i] = DxvkBufferSlice();
       }
 
       m_queryManager.endQueries(m_cmd, 
@@ -4961,6 +4968,7 @@ namespace dxvk {
 
     DxvkGraphicsPipelineFlags oldFlags = m_state.gp.flags;
     DxvkGraphicsPipelineFlags newFlags = newPipeline->flags();
+    DxvkGraphicsPipelineFlags diffFlags = oldFlags ^ newFlags;
 
     DxvkGraphicsPipelineFlags hazardMask(
       DxvkGraphicsPipelineFlag::HasTransformFeedback,
@@ -4968,7 +4976,7 @@ namespace dxvk {
 
     m_state.gp.flags = newFlags;
 
-    if (((oldFlags ^ newFlags) & hazardMask) != 0) {
+    if ((diffFlags & hazardMask) != 0) {
       // Force-update vertex/index buffers for hazard checks
       m_flags.set(DxvkContextFlag::GpDirtyIndexBuffer,
                   DxvkContextFlag::GpDirtyVertexBuffers,
@@ -4980,6 +4988,9 @@ namespace dxvk {
       if (!m_barrierControl.test(DxvkBarrierControl::IgnoreGraphicsBarriers))
         this->spillRenderPass(true);
     }
+
+    if (diffFlags.test(DxvkGraphicsPipelineFlag::HasSampleMaskExport))
+      m_flags.set(DxvkContextFlag::GpDirtyMultisampleState);
 
     m_descriptorState.dirtyStages(VK_SHADER_STAGE_ALL_GRAPHICS);
 
@@ -5582,10 +5593,18 @@ namespace dxvk {
     m_flags.clr(DxvkContextFlag::GpDirtyIndexBuffer);
     auto bufferInfo = m_state.vi.indexBuffer.getDescriptor();
 
-    m_cmd->cmdBindIndexBuffer(
-      bufferInfo.buffer.buffer,
-      bufferInfo.buffer.offset,
-      m_state.vi.indexType);
+    if (m_features.test(DxvkContextFeature::IndexBufferRobustness)) {
+      m_cmd->cmdBindIndexBuffer2(
+        bufferInfo.buffer.buffer,
+        bufferInfo.buffer.offset,
+        bufferInfo.buffer.range,
+        m_state.vi.indexType);
+    } else {
+      m_cmd->cmdBindIndexBuffer(
+        bufferInfo.buffer.buffer,
+        bufferInfo.buffer.offset,
+        m_state.vi.indexType);
+    }
 
     if (m_vbTracked.set(MaxNumVertexBindings))
       m_cmd->trackResource<DxvkAccess::Read>(m_state.vi.indexBuffer.buffer());
@@ -5769,7 +5788,8 @@ namespace dxvk {
       VkSampleMask sampleMask = m_state.gp.state.ms.sampleMask() & ((1u << sampleCount) - 1u);
       m_cmd->cmdSetMultisampleState(sampleCount, sampleMask);
 
-      if (m_device->features().extExtendedDynamicState3.extendedDynamicState3AlphaToCoverageEnable)
+      if (m_device->features().extExtendedDynamicState3.extendedDynamicState3AlphaToCoverageEnable
+       && !m_state.gp.flags.test(DxvkGraphicsPipelineFlag::HasSampleMaskExport))
         m_cmd->cmdSetAlphaToCoverageState(m_state.gp.state.ms.enableAlphaToCoverage());
     }
 
@@ -6068,7 +6088,7 @@ namespace dxvk {
      && m_state.gp.flags.test(DxvkGraphicsPipelineFlag::HasTransformFeedback)) {
       for (uint32_t i = 0; i < MaxNumXfbBuffers && !requiresBarrier; i++) {
         const auto& xfbBufferSlice = m_state.xfb.buffers[i];
-        const auto& xfbCounterSlice = m_state.xfb.counters[i];
+        const auto& xfbCounterSlice = m_state.xfb.activeCounters[i];
 
         if (xfbBufferSlice.length()) {
           requiresBarrier = this->checkBufferBarrier<DoEmit>(xfbBufferSlice,

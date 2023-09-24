@@ -41,6 +41,7 @@ namespace dxvk {
 
     m_usedSamplers = 0;
     m_usedRTs      = 0;
+    m_rRegs.reserve(DxsoMaxTempRegs);
 
     for (uint32_t i = 0; i < m_rRegs.size(); i++)
       m_rRegs.at(i)  = DxsoRegisterPointer{ };
@@ -1043,6 +1044,8 @@ namespace dxvk {
       const DxsoBaseRegister* relative) {
     switch (reg.id.type) {
       case DxsoRegisterType::Temp: {
+        if (reg.id.num >= m_rRegs.size())
+          m_rRegs.resize( reg.id.num + 1, DxsoRegisterPointer { } );
         DxsoRegisterPointer& ptr = m_rRegs.at(reg.id.num);
         if (ptr.id == 0) {
           std::string name = str::format("r", reg.id.num);
@@ -2964,7 +2967,7 @@ void DxsoCompiler::emitControlFlowGenericLoop(
 
     auto SampleType = [&](DxsoSamplerType samplerType) {
       uint32_t bitOffset = m_programInfo.type() == DxsoProgramTypes::VertexShader
-        ? samplerIdx + caps::MaxTexturesPS
+        ? samplerIdx + caps::MaxTexturesPS + 1
         : samplerIdx;
 
       uint32_t isNull = m_spec.get(m_module, m_specUbo, SpecSamplerNull, bitOffset, 1);
